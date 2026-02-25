@@ -28,6 +28,8 @@ export interface Trade {
   confidence: number;
   outcome: "win" | "loss" | "pending";
   pnlCents: number | null;
+  isLive?: boolean;
+  orderId?: string;
 }
 
 // Stats, trades, and logs go through Vercel API proxy routes to avoid CORS.
@@ -49,6 +51,7 @@ export async function getLogs(): Promise<string[]> {
     const res = await fetch("/api/logs", { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
+    if (data && Array.isArray(data.logs)) return data.logs as string[];
     if (Array.isArray(data)) return data as string[];
     return [];
   } catch {

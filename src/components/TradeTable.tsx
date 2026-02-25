@@ -197,7 +197,16 @@ const columns: ColumnDef<Trade>[] = [
   {
     accessorKey: "outcome",
     header: "Outcome",
-    cell: (info) => <OutcomeBadge outcome={info.getValue<string>()} />,
+    cell: (info) => (
+      <div className="flex items-center gap-1">
+        <OutcomeBadge outcome={info.getValue<string>()} />
+        {info.row.original.isLive && (
+          <span className="text-[10px] font-bold text-green-400 border border-green-400 rounded px-1">
+            LIVE
+          </span>
+        )}
+      </div>
+    ),
   },
   {
     accessorKey: "pnlCents",
