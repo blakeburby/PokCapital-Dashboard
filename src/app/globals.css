@@ -1,0 +1,85 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0B0F1A;
+  --panel: #121826;
+  --accent: #3B82F6;
+  --profit: #10B981;
+  --loss: #EF4444;
+  --text: #E5E7EB;
+  --muted: #6B7280;
+  --border: #1F2937;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Panel utility */
+.panel {
+  background-color: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem;
+}
+
+/* Section label */
+.section-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+}
+
+/* Monospace data */
+.data-mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.875rem;
+}
+
+/* Badge variants */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.badge-green { background: rgba(16,185,129,0.15); color: #10B981; }
+.badge-red   { background: rgba(239,68,68,0.15);  color: #EF4444; }
+.badge-blue  { background: rgba(59,130,246,0.15); color: #3B82F6; }
+.badge-yellow{ background: rgba(245,158,11,0.15); color: #F59E0B; }
+.badge-gray  { background: rgba(107,114,128,0.15);color: #6B7280; }
