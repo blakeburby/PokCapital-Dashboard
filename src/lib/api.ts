@@ -18,6 +18,7 @@ export interface Trade {
   asset: string;
   floorStrike: number;
   closeTime: string;
+  entryTimestamp: number;
   regime: string;
   direction: "yes" | "no";
   entryPrice: number;

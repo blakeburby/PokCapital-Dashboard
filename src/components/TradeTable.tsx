@@ -66,13 +66,22 @@ function RegimeBadge({ regime }: { regime: string }) {
 
 const columns: ColumnDef<Trade>[] = [
   {
-    accessorKey: "closeTime",
+    accessorKey: "entryTimestamp",
     header: "Time",
-    cell: (info) => (
-      <span className="text-muted text-xs">
-        {new Date(info.getValue<string>()).toLocaleString()}
-      </span>
-    ),
+    cell: (info) => {
+      const ts = info.getValue<number>();
+      const closeTime = info.row.original.closeTime;
+      return (
+        <div className="flex flex-col">
+          <span className="text-xs text-text font-mono">
+            {new Date(ts).toLocaleTimeString()}
+          </span>
+          <span className="text-xs text-muted">
+            exp {new Date(closeTime).toLocaleTimeString()}
+          </span>
+        </div>
+      );
+    },
   },
   {
     accessorKey: "asset",
@@ -159,7 +168,18 @@ const columns: ColumnDef<Trade>[] = [
     header: "PNL",
     cell: (info) => {
       const v = info.getValue<number | null>();
-      if (v == null) return <span className="text-muted">—</span>;
+      if (v == null) {
+        const { ev, entryPrice } = info.row.original;
+        const pct = entryPrice > 0 ? (ev / entryPrice) * 100 : 0;
+        return (
+          <span
+            className="font-mono text-sm italic"
+            style={{ color: "#F59E0B" }}
+          >
+            ~{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
+          </span>
+        );
+      }
       const dollars = v / 100;
       return (
         <span
@@ -178,7 +198,7 @@ export default function TradeTable() {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [sorting, setSorting] = useState<SortingState>([
-    { id: "closeTime", desc: true },
+    { id: "entryTimestamp", desc: true },
   ]);
 
   const { data: trades, error, isLoading } = useSWR<Trade[]>(
@@ -191,7 +211,7 @@ export default function TradeTable() {
     if (!trades) return [];
     const cutoff = filterCutoff(filter);
     return trades.filter((t) => {
-      const inTime = new Date(t.closeTime).getTime() >= cutoff;
+      const inTime = (t.entryTimestamp ?? new Date(t.closeTime).getTime()) >= cutoff;
       const inSearch =
         !search ||
         t.asset.toLowerCase().includes(search.toLowerCase()) ||
