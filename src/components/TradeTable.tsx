@@ -13,7 +13,43 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { getTrades, type Trade } from "@/lib/api";
-import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Download } from "lucide-react";
+
+function exportToCsv(trades: Trade[], filter: string) {
+  const headers = [
+    "ID", "Entry Time", "Expiry Time", "Asset", "Strike",
+    "Regime", "Direction", "Entry Price (¢)", "Model P (%)",
+    "Market P (%)", "EV (¢)", "Confidence (%)", "Outcome", "PNL ($)",
+  ];
+  const rows = trades.map((t) => [
+    t.id,
+    t.entryTimestamp ? new Date(t.entryTimestamp).toISOString() : "",
+    new Date(t.closeTime).toISOString(),
+    t.asset,
+    t.floorStrike,
+    t.regime,
+    t.direction,
+    t.entryPrice,
+    (t.modelProbability * 100).toFixed(2),
+    (t.marketProbability * 100).toFixed(2),
+    t.ev.toFixed(2),
+    t.confidence.toFixed(1),
+    t.outcome,
+    t.pnlCents != null ? (t.pnlCents / 100).toFixed(2) : "",
+  ]);
+
+  const csv = [headers, ...rows]
+    .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+    .join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trades_${filter}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 type Filter = "1h" | "1d" | "7d" | "30d" | "365d" | "all";
 
@@ -238,7 +274,7 @@ export default function TradeTable() {
         <p className="section-label" style={{ marginBottom: 0 }}>
           Trade History
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <input
             type="text"
             placeholder="Search asset..."
@@ -261,6 +297,14 @@ export default function TradeTable() {
               </button>
             ))}
           </div>
+          <button
+            onClick={() => exportToCsv(filteredTrades, filter)}
+            disabled={filteredTrades.length === 0}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-border text-muted hover:text-text hover:border-accent transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            <Download size={11} />
+            CSV
+          </button>
         </div>
       </div>
 
