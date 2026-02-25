@@ -7,6 +7,7 @@ import TradeTable from "@/components/TradeTable";
 import PriceFeeds from "@/components/PriceFeeds";
 import StrategyState from "@/components/StrategyState";
 import LogsPanel from "@/components/LogsPanel";
+import PaperTradingSection from "@/components/PaperTradingSection";
 
 // Canvas-based chart requires client-only rendering (no SSR)
 const MonteCarloChart = dynamic(() => import("@/components/MonteCarloChart"), {
@@ -42,9 +43,7 @@ export default function Dashboard() {
       >
         <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div
-              className="w-2 h-2 rounded-full bg-profit animate-pulse"
-            />
+            <div className="w-2 h-2 rounded-full bg-profit animate-pulse" />
             <span className="text-sm font-semibold tracking-wide">
               POKCAPITAL
             </span>
@@ -67,14 +66,13 @@ export default function Dashboard() {
               </span>
             </span>
             <span>
-              Refresh:{" "}
-              <span className="font-mono text-text">5s</span>
+              Refresh: <span className="font-mono text-text">5s</span>
             </span>
           </div>
         </div>
       </header>
 
-      {/* Dashboard sections */}
+      {/* ── ALGORITHM MONITOR ── */}
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-10">
 
         {/* 1 — Strategy Overview */}
@@ -82,34 +80,34 @@ export default function Dashboard() {
           <StatsCards />
         </section>
 
-        {/* 2 — PNL Analytics */}
-        <section>
-          <PnlChart />
-        </section>
-
-        {/* 3 — Trade History */}
-        <section>
-          <TradeTable />
-        </section>
-
-        {/* 4 — Monte Carlo Visualization */}
+        {/* 2 — Monte Carlo Visualization */}
         <section>
           <MonteCarloChart />
         </section>
 
-        {/* 5 — Live Crypto Prices */}
+        {/* 3 — Live Crypto Prices */}
         <section>
           <PriceFeeds />
         </section>
 
-        {/* 6 — Strategy State */}
+        {/* 4 — Live Strategy State */}
         <section>
           <StrategyState />
         </section>
 
-        {/* 7 — Logs Panel */}
+        {/* ── PAPER TRADING ── */}
         <section>
-          <LogsPanel />
+          <PaperTradingSection
+            labels={[
+              "Paper Trading PNL Analytics",
+              "Paper Trade History",
+              "Deploy Logs",
+            ]}
+          >
+            <PnlChart />
+            <TradeTable />
+            <LogsPanel />
+          </PaperTradingSection>
         </section>
 
       </div>
