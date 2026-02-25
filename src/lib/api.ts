@@ -1,7 +1,3 @@
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE ||
-  "https://pokcapitalweb-production.up.railway.app";
-
 export interface Stats {
   totalTrades: number;
   settledTrades: number;
@@ -33,25 +29,26 @@ export interface Trade {
   pnlCents: number | null;
 }
 
+// Stats, trades, and logs go through Vercel API proxy routes to avoid CORS.
+// Browser calls /api/* (same origin), Vercel server calls Railway server-to-server.
 export async function getStats(): Promise<Stats> {
-  const res = await fetch(`${API_BASE}/stats`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`/stats returned ${res.status}`);
+  const res = await fetch("/api/stats", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/stats returned ${res.status}`);
   return res.json();
 }
 
 export async function getTrades(): Promise<Trade[]> {
-  const res = await fetch(`${API_BASE}/trades`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`/trades returned ${res.status}`);
+  const res = await fetch("/api/trades", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/trades returned ${res.status}`);
   return res.json();
 }
 
 export async function getLogs(): Promise<string[]> {
   try {
-    const res = await fetch(`${API_BASE}/logs`, { cache: "no-store" });
+    const res = await fetch("/api/logs", { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     if (Array.isArray(data)) return data as string[];
-    if (typeof data === "object" && data.logs) return data.logs as string[];
     return [];
   } catch {
     return [];
