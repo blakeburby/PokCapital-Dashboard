@@ -1,26 +1,10 @@
 "use client";
 
-import dynamic from "next/dynamic";
 import StatsCards from "@/components/StatsCards";
 import PnlChart from "@/components/PnlChart";
 import TradeTable from "@/components/TradeTable";
-import PriceFeeds from "@/components/PriceFeeds";
-import StrategyState from "@/components/StrategyState";
 import LogsPanel from "@/components/LogsPanel";
 import PaperTradingSection from "@/components/PaperTradingSection";
-
-// Canvas-based chart requires client-only rendering (no SSR)
-const MonteCarloChart = dynamic(() => import("@/components/MonteCarloChart"), {
-  ssr: false,
-  loading: () => (
-    <div
-      className="panel flex items-center justify-center text-muted text-sm animate-pulse"
-      style={{ height: 340 }}
-    >
-      Loading Monte Carlo simulation...
-    </div>
-  ),
-});
 
 export default function Dashboard() {
   return (
@@ -78,21 +62,6 @@ export default function Dashboard() {
         {/* 1 — Strategy Overview */}
         <section>
           <StatsCards />
-        </section>
-
-        {/* 2 — Monte Carlo Visualization */}
-        <section>
-          <MonteCarloChart />
-        </section>
-
-        {/* 3 — Live Crypto Prices */}
-        <section>
-          <PriceFeeds />
-        </section>
-
-        {/* 4 — Live Strategy State */}
-        <section>
-          <StrategyState />
         </section>
 
         {/* ── PAPER TRADING ── */}
