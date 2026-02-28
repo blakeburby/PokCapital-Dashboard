@@ -44,35 +44,52 @@ interface ChartPoint {
   totalPnl: number;
 }
 
+function tradeTime(t: Trade): number {
+  // Use settlement time for settled trades so points are spread across real time.
+  // Fall back to entry time, then close time.
+  if (t.outcome !== "pending" && t.settledAt) return t.settledAt;
+  return t.entryTimestamp ?? new Date(t.closeTime).getTime();
+}
+
 function buildChartData(trades: Trade[], filter: Filter): ChartPoint[] {
   const cutoff = filterCutoff(filter);
   const sorted = [...trades]
-    .filter((t) => new Date(t.closeTime).getTime() >= cutoff)
-    .sort(
-      (a, b) =>
-        new Date(a.closeTime).getTime() - new Date(b.closeTime).getTime()
-    );
+    .filter((t) => tradeTime(t) >= cutoff)
+    .sort((a, b) => tradeTime(a) - tradeTime(b));
+
+  if (sorted.length === 0) return [];
 
   let cumRealized = 0;
   let cumUnrealized = 0;
 
-  return sorted.map((t) => {
-    const pnlDollars = t.pnlCents != null ? t.pnlCents / 100 : 0;
-    if (t.outcome !== "pending" && t.pnlCents != null) {
-      cumRealized += pnlDollars;
+  // Start from zero so the chart always anchors at the left
+  const startTs = tradeTime(sorted[0]) - 1000;
+  const points: ChartPoint[] = [{
+    time: startTs,
+    label: new Date(startTs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    realizedPnl: 0,
+    unrealizedPnl: 0,
+    totalPnl: 0,
+  }];
+
+  for (const t of sorted) {
+    if (t.outcome !== "pending" && t.pnlTotal != null) {
+      cumRealized += t.pnlTotal / 100;
     } else {
-      // Pending trades count as unrealized at their EV estimate
-      cumUnrealized += t.ev / 100;
+      // Pending: EV estimate scaled by contract count
+      cumUnrealized += (t.ev * (t.suggestedSize ?? 1)) / 100;
     }
-    const ts = new Date(t.closeTime).getTime();
-    return {
+    const ts = tradeTime(t);
+    points.push({
       time: ts,
-      label: new Date(t.closeTime).toLocaleTimeString(),
-      realizedPnl: parseFloat(cumRealized.toFixed(4)),
-      unrealizedPnl: parseFloat(cumUnrealized.toFixed(4)),
-      totalPnl: parseFloat((cumRealized + cumUnrealized).toFixed(4)),
-    };
-  });
+      label: new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      realizedPnl: parseFloat(cumRealized.toFixed(2)),
+      unrealizedPnl: parseFloat(cumUnrealized.toFixed(2)),
+      totalPnl: parseFloat((cumRealized + cumUnrealized).toFixed(2)),
+    });
+  }
+
+  return points;
 }
 
 const CustomTooltip = ({ active, payload }: any) => {
@@ -84,11 +101,11 @@ const CustomTooltip = ({ active, payload }: any) => {
       style={{ borderColor: "#1F2937", minWidth: 140 }}
     >
       <p className="text-muted mb-1">{new Date(d.time).toLocaleString()}</p>
-      <p style={{ color: "#10B981" }}>Realized: ${d.realizedPnl.toFixed(4)}</p>
+      <p style={{ color: "#10B981" }}>Realized: ${d.realizedPnl.toFixed(2)}</p>
       <p style={{ color: "#3B82F6" }}>
-        Unrealized: ${d.unrealizedPnl.toFixed(4)}
+        Unrealized: ${d.unrealizedPnl.toFixed(2)}
       </p>
-      <p className="text-text font-semibold">Total: ${d.totalPnl.toFixed(4)}</p>
+      <p className="text-text font-semibold">Total: ${d.totalPnl.toFixed(2)}</p>
     </div>
   );
 };
@@ -140,19 +157,19 @@ export default function PnlChart() {
             <span
               className={`font-semibold font-mono ${isPositive ? "text-profit" : "text-loss"}`}
             >
-              {isPositive ? "+" : ""}${latestTotal.toFixed(4)}
+              {isPositive ? "+" : ""}${latestTotal.toFixed(2)}
             </span>
           </div>
           <div>
             <span className="text-muted">Realized </span>
             <span className="font-mono text-profit">
-              ${chartData[chartData.length - 1]?.realizedPnl.toFixed(4) ?? "0.0000"}
+              ${chartData[chartData.length - 1]?.realizedPnl.toFixed(2) ?? "0.00"}
             </span>
           </div>
           <div>
             <span className="text-muted">Unrealized </span>
             <span className="font-mono text-accent">
-              ${chartData[chartData.length - 1]?.unrealizedPnl.toFixed(4) ?? "0.0000"}
+              ${chartData[chartData.length - 1]?.unrealizedPnl.toFixed(2) ?? "0.00"}
             </span>
           </div>
         </div>

@@ -19,15 +19,19 @@ export interface Trade {
   floorStrike: number;
   closeTime: string;
   entryTimestamp: number;
+  settledAt: number | null;
   regime: string;
   direction: "yes" | "no";
   entryPrice: number;
+  suggestedSize: number;
   modelProbability: number;
   marketProbability: number;
   ev: number;
+  kellyFraction: number;
   confidence: number;
   outcome: "win" | "loss" | "pending";
   pnlCents: number | null;
+  pnlTotal: number | null;
   isLive?: boolean;
   orderId?: string;
 }

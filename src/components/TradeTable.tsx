@@ -18,8 +18,9 @@ import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Download } from "l
 function exportToCsv(trades: Trade[], filter: string) {
   const headers = [
     "ID", "Entry Time", "Expiry Time", "Asset", "Strike",
-    "Regime", "Direction", "Entry Price (¢)", "Model P (%)",
-    "Market P (%)", "EV (¢)", "Confidence (%)", "Outcome", "PNL ($)",
+    "Regime", "Direction", "Entry Price (¢)", "Qty (contracts)",
+    "Model P (%)", "Market P (%)", "EV (¢)", "Confidence (%)",
+    "Outcome", "PNL/contract ($)", "Total PNL ($)",
   ];
   const rows = trades.map((t) => [
     t.id,
@@ -30,12 +31,14 @@ function exportToCsv(trades: Trade[], filter: string) {
     t.regime,
     t.direction,
     t.entryPrice,
+    t.suggestedSize ?? "",
     (t.modelProbability * 100).toFixed(2),
     (t.marketProbability * 100).toFixed(2),
     t.ev.toFixed(2),
     t.confidence.toFixed(1),
     t.outcome,
     t.pnlCents != null ? (t.pnlCents / 100).toFixed(2) : "",
+    t.pnlTotal != null ? (t.pnlTotal / 100).toFixed(2) : "",
   ]);
 
   const csv = [headers, ...rows]
@@ -153,6 +156,15 @@ const columns: ColumnDef<Trade>[] = [
     ),
   },
   {
+    accessorKey: "suggestedSize",
+    header: "Qty",
+    cell: (info) => (
+      <span className="font-mono text-sm font-semibold">
+        {info.getValue<number>() ?? "—"}
+      </span>
+    ),
+  },
+  {
     accessorKey: "modelProbability",
     header: "Model P",
     cell: (info) => (
@@ -209,23 +221,21 @@ const columns: ColumnDef<Trade>[] = [
     ),
   },
   {
-    accessorKey: "pnlCents",
+    accessorKey: "pnlTotal",
     header: "PNL",
     cell: (info) => {
-      const v = info.getValue<number | null>();
-      if (v == null) {
-        const { ev, entryPrice } = info.row.original;
-        const pct = entryPrice > 0 ? (ev / entryPrice) * 100 : 0;
+      const total = info.getValue<number | null>();
+      const { ev, suggestedSize, outcome } = info.row.original;
+      if (outcome === "pending" || total == null) {
+        // Pending: show EV-based estimate across all contracts
+        const estTotal = (ev * (suggestedSize ?? 1)) / 100;
         return (
-          <span
-            className="font-mono text-sm italic"
-            style={{ color: "#F59E0B" }}
-          >
-            ~{pct >= 0 ? "+" : ""}{pct.toFixed(1)}%
+          <span className="font-mono text-sm italic" style={{ color: "#F59E0B" }}>
+            ~{estTotal >= 0 ? "+" : ""}${estTotal.toFixed(2)}
           </span>
         );
       }
-      const dollars = v / 100;
+      const dollars = total / 100;
       return (
         <span
           className={`font-mono text-sm font-semibold ${
