@@ -177,7 +177,7 @@ const checkboxColumn: ColumnDef<EnrichedFill> = {
       ref={(el) => {
         if (el) el.indeterminate = table.getIsSomePageRowsSelected();
       }}
-      onChange={table.getToggleAllPageRowsHandler()}
+      onChange={table.getToggleAllPageRowsSelectedHandler()}
     />
   ),
   cell: ({ row }) => (
