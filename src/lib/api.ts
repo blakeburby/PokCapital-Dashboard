@@ -63,6 +63,25 @@ export async function getLogs(): Promise<string[]> {
   }
 }
 
+export interface KalshiFill {
+  trade_id: string;       // fill ID
+  order_id: string;       // order that generated this fill
+  ticker: string;         // e.g. "KXBTC15M-24..."
+  action: "buy" | "sell";
+  side: "yes" | "no";
+  count: number;          // contracts filled
+  yes_price: number;      // cents (0-100)
+  no_price: number;       // cents (0-100)
+  is_taker: boolean;
+  created_time: string;   // ISO-8601
+}
+
+export async function getFills(): Promise<KalshiFill[]> {
+  const res = await fetch("/api/fills", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/fills returned ${res.status}`);
+  return res.json();
+}
+
 // --- Price feeds (public exchange APIs, called client-side) ---
 
 export interface ExchangePrice {

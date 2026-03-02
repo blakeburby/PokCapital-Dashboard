@@ -7,6 +7,9 @@ import LogsPanel from "@/components/LogsPanel";
 import PaperTradingSection from "@/components/PaperTradingSection";
 import LiveTradingSection from "@/components/LiveTradingSection";
 import LiveStatsCards from "@/components/LiveStatsCards";
+import RealTradingSection from "@/components/RealTradingSection";
+import KalshiFillsStats from "@/components/KalshiFillsStats";
+import KalshiFillsTable from "@/components/KalshiFillsTable";
 import type { Trade } from "@/lib/api";
 
 const liveFilter = (t: Trade) => t.isLive === true;
@@ -65,7 +68,20 @@ export default function Dashboard() {
       {/* ── ALGORITHM MONITOR ── */}
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-10">
 
-        {/* 1 — LIVE TRADING */}
+        {/* 1 — REAL TRADES (direct Kalshi account fills) */}
+        <section>
+          <RealTradingSection
+            labels={[
+              "Account Overview",
+              "Fill History",
+            ]}
+          >
+            <KalshiFillsStats />
+            <KalshiFillsTable />
+          </RealTradingSection>
+        </section>
+
+        {/* 2 — LIVE TRADING */}
         <section>
           <LiveTradingSection
             labels={[
@@ -80,12 +96,12 @@ export default function Dashboard() {
           </LiveTradingSection>
         </section>
 
-        {/* 2 — Strategy Overview (all trades combined) */}
+        {/* 3 — Strategy Overview (all trades combined) */}
         <section>
           <StatsCards />
         </section>
 
-        {/* 3 — PAPER TRADING */}
+        {/* 4 — PAPER TRADING */}
         <section>
           <PaperTradingSection
             labels={[
