@@ -110,7 +110,7 @@ const CustomTooltip = ({ active, payload }: any) => {
   );
 };
 
-export default function PnlChart() {
+export default function PnlChart({ filterFn }: { filterFn?: (t: Trade) => boolean } = {}) {
   const [filter, setFilter] = useState<Filter>("all");
   const { data: trades, error, isLoading } = useSWR<Trade[]>(
     "trades-pnl",
@@ -118,9 +118,14 @@ export default function PnlChart() {
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
+  const filteredTrades = useMemo(
+    () => (trades && filterFn ? trades.filter(filterFn) : trades),
+    [trades, filterFn]
+  );
+
   const chartData = useMemo(
-    () => (trades ? buildChartData(trades, filter) : []),
-    [trades, filter]
+    () => (filteredTrades ? buildChartData(filteredTrades, filter) : []),
+    [filteredTrades, filter]
   );
 
   const latestTotal = chartData[chartData.length - 1]?.totalPnl ?? 0;

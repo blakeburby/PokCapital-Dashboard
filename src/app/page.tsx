@@ -5,6 +5,12 @@ import PnlChart from "@/components/PnlChart";
 import TradeTable from "@/components/TradeTable";
 import LogsPanel from "@/components/LogsPanel";
 import PaperTradingSection from "@/components/PaperTradingSection";
+import LiveTradingSection from "@/components/LiveTradingSection";
+import LiveStatsCards from "@/components/LiveStatsCards";
+import type { Trade } from "@/lib/api";
+
+const liveFilter = (t: Trade) => t.isLive === true;
+const paperFilter = (t: Trade) => !t.isLive;
 
 export default function Dashboard() {
   return (
@@ -59,12 +65,27 @@ export default function Dashboard() {
       {/* ── ALGORITHM MONITOR ── */}
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-10">
 
-        {/* 1 — Strategy Overview */}
+        {/* 1 — LIVE TRADING */}
+        <section>
+          <LiveTradingSection
+            labels={[
+              "Live Strategy Overview",
+              "Live PNL Analytics",
+              "Live Trade History",
+            ]}
+          >
+            <LiveStatsCards />
+            <PnlChart filterFn={liveFilter} />
+            <TradeTable filterFn={liveFilter} />
+          </LiveTradingSection>
+        </section>
+
+        {/* 2 — Strategy Overview (all trades combined) */}
         <section>
           <StatsCards />
         </section>
 
-        {/* ── PAPER TRADING ── */}
+        {/* 3 — PAPER TRADING */}
         <section>
           <PaperTradingSection
             labels={[
@@ -73,8 +94,8 @@ export default function Dashboard() {
               "Deploy Logs",
             ]}
           >
-            <PnlChart />
-            <TradeTable />
+            <PnlChart filterFn={paperFilter} />
+            <TradeTable filterFn={paperFilter} />
             <LogsPanel />
           </PaperTradingSection>
         </section>

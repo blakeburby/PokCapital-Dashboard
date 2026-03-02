@@ -249,7 +249,7 @@ const columns: ColumnDef<Trade>[] = [
   },
 ];
 
-export default function TradeTable() {
+export default function TradeTable({ filterFn }: { filterFn?: (t: Trade) => boolean } = {}) {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [sorting, setSorting] = useState<SortingState>([
@@ -264,8 +264,9 @@ export default function TradeTable() {
 
   const filteredTrades = useMemo(() => {
     if (!trades) return [];
+    const modeFiltered = filterFn ? trades.filter(filterFn) : trades;
     const cutoff = filterCutoff(filter);
-    return trades.filter((t) => {
+    return modeFiltered.filter((t) => {
       const inTime = (t.entryTimestamp ?? new Date(t.closeTime).getTime()) >= cutoff;
       const inSearch =
         !search ||
@@ -273,7 +274,7 @@ export default function TradeTable() {
         t.id.toLowerCase().includes(search.toLowerCase());
       return inTime && inSearch;
     });
-  }, [trades, filter, search]);
+  }, [trades, filterFn, filter, search]);
 
   const table = useReactTable({
     data: filteredTrades,
