@@ -18,12 +18,15 @@ import {
   ChevronsUpDown,
   AlertCircle,
   Download,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TimeFilter = "1h" | "1d" | "7d" | "30d" | "all";
 type StatusFilter = "all" | "win" | "loss" | "pending";
+type ViewMode = "active" | "hidden";
 
 interface EnrichedFill extends KalshiFill {
   resolvedAsset: string;
@@ -54,6 +57,7 @@ const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
 ];
 
 const V = "#8B5CF6";
+const LS_KEY = "kalshi-hidden-fills";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -75,6 +79,14 @@ function fmtUSD(dollars: number): string {
   return dollars >= 0
     ? `+$${dollars.toFixed(2)}`
     : `-$${Math.abs(dollars).toFixed(2)}`;
+}
+
+function loadHiddenIds(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(LS_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
 }
 
 // ─── Badge components ─────────────────────────────────────────────────────────
@@ -152,9 +164,35 @@ function exportToCsv(fills: EnrichedFill[], timeFilter: string) {
   URL.revokeObjectURL(url);
 }
 
-// ─── Column definitions ───────────────────────────────────────────────────────
+// ─── Checkbox column ──────────────────────────────────────────────────────────
 
-const columns: ColumnDef<EnrichedFill>[] = [
+const checkboxColumn: ColumnDef<EnrichedFill> = {
+  id: "select",
+  enableSorting: false,
+  header: ({ table }) => (
+    <input
+      type="checkbox"
+      className="accent-violet-500 cursor-pointer"
+      checked={table.getIsAllPageRowsSelected()}
+      ref={(el) => {
+        if (el) el.indeterminate = table.getIsSomePageRowsSelected();
+      }}
+      onChange={table.getToggleAllPageRowsHandler()}
+    />
+  ),
+  cell: ({ row }) => (
+    <input
+      type="checkbox"
+      className="accent-violet-500 cursor-pointer"
+      checked={row.getIsSelected()}
+      onChange={row.getToggleSelectedHandler()}
+    />
+  ),
+};
+
+// ─── Data columns ─────────────────────────────────────────────────────────────
+
+const dataColumns: ColumnDef<EnrichedFill>[] = [
   {
     accessorKey: "created_time",
     header: "Time",
@@ -343,6 +381,8 @@ const columns: ColumnDef<EnrichedFill>[] = [
   },
 ];
 
+const allColumns: ColumnDef<EnrichedFill>[] = [checkboxColumn, ...dataColumns];
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function KalshiFillsTable() {
@@ -354,7 +394,16 @@ export default function KalshiFillsTable() {
   const [sorting, setSorting] = useState<SortingState>([
     { id: "created_time", desc: true },
   ]);
+  const [viewMode, setViewMode] = useState<ViewMode>("active");
+  const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(loadHiddenIds);
 
+  // Sync hidden IDs to localStorage
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, JSON.stringify(Array.from(hiddenIds)));
+  }, [hiddenIds]);
+
+  // Debounce EV filter input
   useEffect(() => {
     const t = setTimeout(() => {
       const v = parseFloat(minEVInput);
@@ -409,11 +458,17 @@ export default function KalshiFillsTable() {
   const filteredFills = useMemo((): EnrichedFill[] => {
     const cutoff = filterCutoff(timeFilter);
     return enrichedFills.filter((f) => {
+      // View mode gate
+      if (viewMode === "active" && hiddenIds.has(f.trade_id)) return false;
+      if (viewMode === "hidden" && !hiddenIds.has(f.trade_id)) return false;
+      // Time filter
       if (new Date(f.created_time).getTime() < cutoff) return false;
+      // Status filter
       if (statusFilter !== "all") {
         if (!f.paperTrade) return false;
         if (f.paperTrade.outcome !== statusFilter) return false;
       }
+      // Asset search
       if (assetSearch) {
         const q = assetSearch.toLowerCase();
         if (
@@ -423,18 +478,21 @@ export default function KalshiFillsTable() {
         )
           return false;
       }
+      // EV filter
       if (minEVCents !== null) {
         if (!f.paperTrade || f.paperTrade.ev < minEVCents) return false;
       }
       return true;
     });
-  }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents]);
+  }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents, viewMode, hiddenIds]);
 
   const table = useReactTable({
     data: filteredFills,
-    columns,
-    state: { sorting },
+    columns: allColumns,
+    state: { sorting, rowSelection },
     onSortingChange: setSorting,
+    onRowSelectionChange: setRowSelection,
+    getRowId: (row) => row.trade_id,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
@@ -442,14 +500,64 @@ export default function KalshiFillsTable() {
   });
 
   const matchedCount = enrichedFills.filter((f) => f.paperTrade !== null).length;
+  const selectedCount = Object.keys(rowSelection).length;
+
+  function switchView(mode: ViewMode) {
+    setViewMode(mode);
+    setRowSelection({});
+  }
+
+  function hideSelected() {
+    setHiddenIds((prev) => new Set([...Array.from(prev), ...Object.keys(rowSelection)]));
+    setRowSelection({});
+  }
+
+  function unhideSelected() {
+    const toRemove = new Set(Object.keys(rowSelection));
+    setHiddenIds((prev) => new Set(Array.from(prev).filter((id) => !toRemove.has(id))));
+    setRowSelection({});
+  }
 
   return (
     <div>
+      {/* Controls bar */}
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-        <p className="section-label" style={{ marginBottom: 0 }}>
-          Fill History
-        </p>
+        {/* Left: label + view toggle */}
+        <div className="flex items-center gap-2">
+          <p className="section-label" style={{ marginBottom: 0 }}>
+            Fill History
+          </p>
+          <div className="flex gap-1">
+            {(["active", "hidden"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => switchView(mode)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  viewMode === mode ? "text-white" : "text-muted hover:text-text"
+                }`}
+                style={viewMode === mode ? { backgroundColor: V } : {}}
+              >
+                {mode === "active" ? "Active" : "Hidden"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Right: filters + bulk action + CSV */}
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Bulk action */}
+          {selectedCount > 0 && (
+            <button
+              onClick={viewMode === "active" ? hideSelected : unhideSelected}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-border text-muted hover:text-text hover:border-accent transition-colors"
+            >
+              {viewMode === "active" ? <EyeOff size={11} /> : <Eye size={11} />}
+              {viewMode === "active"
+                ? `Hide ${selectedCount}`
+                : `Unhide ${selectedCount}`}
+            </button>
+          )}
+          {/* Asset search */}
           <input
             type="text"
             placeholder="Search asset..."
@@ -457,6 +565,7 @@ export default function KalshiFillsTable() {
             onChange={(e) => setAssetSearch(e.target.value)}
             className="px-3 py-1 text-xs rounded bg-panel border border-border text-text placeholder-muted focus:outline-none focus:border-accent"
           />
+          {/* Min EV */}
           <input
             type="number"
             placeholder="Min EV (¢)"
@@ -464,12 +573,14 @@ export default function KalshiFillsTable() {
             onChange={(e) => setMinEVInput(e.target.value)}
             className="px-3 py-1 text-xs rounded bg-panel border border-border text-text placeholder-muted focus:outline-none focus:border-accent w-24"
           />
+          {/* Model context warning */}
           {tradesError && (
             <span className="flex items-center gap-1 text-xs text-loss">
               <AlertCircle size={11} />
               Model context unavailable
             </span>
           )}
+          {/* Status filter */}
           <div className="flex gap-1">
             {STATUS_FILTERS.map((f) => (
               <button
@@ -484,6 +595,7 @@ export default function KalshiFillsTable() {
               </button>
             ))}
           </div>
+          {/* Time filter */}
           <div className="flex gap-1">
             {TIME_FILTERS.map((f) => (
               <button
@@ -498,6 +610,7 @@ export default function KalshiFillsTable() {
               </button>
             ))}
           </div>
+          {/* CSV export */}
           <button
             onClick={() => exportToCsv(filteredFills, timeFilter)}
             disabled={filteredFills.length === 0}
@@ -509,6 +622,7 @@ export default function KalshiFillsTable() {
         </div>
       </div>
 
+      {/* Table */}
       <div className="panel p-0 overflow-hidden">
         {fillsError && (
           <div className="flex items-center gap-2 text-loss text-sm p-4">
@@ -533,20 +647,30 @@ export default function KalshiFillsTable() {
                       {hg.headers.map((header) => (
                         <th
                           key={header.id}
-                          onClick={header.column.getToggleSortingHandler()}
-                          className="px-3 py-2.5 text-left text-xs font-medium text-muted uppercase tracking-wider cursor-pointer select-none hover:text-text whitespace-nowrap"
+                          onClick={
+                            header.column.getCanSort()
+                              ? header.column.getToggleSortingHandler()
+                              : undefined
+                          }
+                          className={`px-3 py-2.5 text-left text-xs font-medium text-muted uppercase tracking-wider select-none whitespace-nowrap ${
+                            header.column.getCanSort()
+                              ? "cursor-pointer hover:text-text"
+                              : ""
+                          }`}
                         >
                           <div className="flex items-center gap-1">
                             {flexRender(
                               header.column.columnDef.header,
                               header.getContext()
                             )}
-                            {header.column.getIsSorted() === "asc" ? (
-                              <ChevronUp size={12} className="text-accent" />
-                            ) : header.column.getIsSorted() === "desc" ? (
-                              <ChevronDown size={12} className="text-accent" />
-                            ) : (
-                              <ChevronsUpDown size={12} className="opacity-30" />
+                            {header.column.getCanSort() && (
+                              header.column.getIsSorted() === "asc" ? (
+                                <ChevronUp size={12} className="text-accent" />
+                              ) : header.column.getIsSorted() === "desc" ? (
+                                <ChevronDown size={12} className="text-accent" />
+                              ) : (
+                                <ChevronsUpDown size={12} className="opacity-30" />
+                              )
                             )}
                           </div>
                         </th>
@@ -558,10 +682,12 @@ export default function KalshiFillsTable() {
                   {table.getRowModel().rows.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={columns.length}
+                        colSpan={allColumns.length}
                         className="text-center text-muted py-10 text-sm"
                       >
-                        No fills found — try adjusting filters or wait for trades to settle
+                        {viewMode === "hidden"
+                          ? "No hidden fills — hide rows from the Active view"
+                          : "No fills found — try adjusting filters or wait for trades to settle"}
                       </td>
                     </tr>
                   ) : (
@@ -570,7 +696,7 @@ export default function KalshiFillsTable() {
                         key={row.id}
                         className={`border-b border-border hover:bg-white/5 transition-colors ${
                           i % 2 === 0 ? "" : "bg-white/[0.02]"
-                        }`}
+                        } ${row.getIsSelected() ? "bg-violet-500/5" : ""}`}
                       >
                         {row.getVisibleCells().map((cell) => (
                           <td key={cell.id} className="px-3 py-2 whitespace-nowrap">
@@ -584,10 +710,14 @@ export default function KalshiFillsTable() {
               </table>
             </div>
 
+            {/* Pagination footer */}
             <div className="flex items-center justify-between px-4 py-3 border-t border-border text-xs text-muted">
               <span>
                 {filteredFills.length} fill{filteredFills.length !== 1 ? "s" : ""}
-                {matchedCount > 0 && (
+                {viewMode === "active" && hiddenIds.size > 0 && (
+                  <span className="ml-1.5 text-muted">· {hiddenIds.size} hidden</span>
+                )}
+                {viewMode === "active" && matchedCount > 0 && (
                   <span className="ml-1.5" style={{ color: V }}>
                     · {matchedCount} with model context
                   </span>
