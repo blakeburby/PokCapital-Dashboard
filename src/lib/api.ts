@@ -34,6 +34,7 @@ export interface Trade {
   pnlTotal: number | null;
   isLive?: boolean;
   orderId?: string;
+  liveCount?: number; // actual contracts placed (may differ from suggestedSize)
 }
 
 // Stats, trades, and logs go through Vercel API proxy routes to avoid CORS.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import useSWR from "swr";
 import {
   useReactTable,
@@ -11,12 +11,34 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { getFills, type KalshiFill } from "@/lib/api";
-import { ChevronUp, ChevronDown, ChevronsUpDown, AlertCircle, Download } from "lucide-react";
+import { getFills, getTrades, type KalshiFill, type Trade } from "@/lib/api";
+import {
+  ChevronUp,
+  ChevronDown,
+  ChevronsUpDown,
+  AlertCircle,
+  Download,
+} from "lucide-react";
 
-type Filter = "1h" | "1d" | "7d" | "30d" | "all";
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-const FILTERS: { label: string; value: Filter }[] = [
+type TimeFilter = "1h" | "1d" | "7d" | "30d" | "all";
+type StatusFilter = "all" | "win" | "loss" | "pending";
+
+interface EnrichedFill extends KalshiFill {
+  resolvedAsset: string;
+  fillPrice: number;
+  paperTrade: Trade | null;
+  slippage: number | null;
+  capitalUSD: number;
+  totalEV: number | null;
+  estimatedPnlUSD: number | null;
+  roi: number | null;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const TIME_FILTERS: { label: string; value: TimeFilter }[] = [
   { label: "1H", value: "1h" },
   { label: "1D", value: "1d" },
   { label: "1W", value: "7d" },
@@ -24,7 +46,18 @@ const FILTERS: { label: string; value: Filter }[] = [
   { label: "All", value: "all" },
 ];
 
-function filterCutoff(filter: Filter): number {
+const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
+  { label: "All", value: "all" },
+  { label: "Win", value: "win" },
+  { label: "Loss", value: "loss" },
+  { label: "Pending", value: "pending" },
+];
+
+const V = "#8B5CF6";
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function filterCutoff(filter: TimeFilter): number {
   const now = Date.now();
   if (filter === "1h") return now - 3_600_000;
   if (filter === "1d") return now - 86_400_000;
@@ -38,19 +71,72 @@ function tickerToAsset(ticker: string): string {
   return m ? m[1] : ticker.split("-")[0];
 }
 
-function exportToCsv(fills: KalshiFill[], filter: string) {
+function fmtUSD(dollars: number): string {
+  return dollars >= 0
+    ? `+$${dollars.toFixed(2)}`
+    : `-$${Math.abs(dollars).toFixed(2)}`;
+}
+
+// ─── Badge components ─────────────────────────────────────────────────────────
+
+function OutcomeBadge({ outcome }: { outcome: string }) {
+  const cls =
+    outcome === "win"
+      ? "badge badge-green"
+      : outcome === "loss"
+      ? "badge badge-red"
+      : "badge badge-yellow";
+  return <span className={cls}>{outcome}</span>;
+}
+
+function DirectionBadge({ dir }: { dir: string }) {
+  return (
+    <span className={dir === "yes" ? "badge badge-blue" : "badge badge-gray"}>
+      {dir.toUpperCase()}
+    </span>
+  );
+}
+
+function RegimeBadge({ regime }: { regime: string }) {
+  const cls =
+    regime === "R1"
+      ? "badge badge-green"
+      : regime === "R2"
+      ? "badge badge-blue"
+      : "badge badge-red";
+  return <span className={cls}>{regime}</span>;
+}
+
+// ─── CSV export ───────────────────────────────────────────────────────────────
+
+function exportToCsv(fills: EnrichedFill[], timeFilter: string) {
   const headers = [
-    "Fill ID", "Order ID", "Time", "Market", "Side",
-    "Fill Price (¢)", "Contracts", "Action", "Taker",
+    "Fill ID", "Order ID", "Time", "Asset", "Ticker",
+    "Side", "Fill Price (¢)", "Model Entry (¢)", "Slippage (¢)",
+    "Contracts", "Capital ($)", "Model P (%)", "EV/contract (¢)",
+    "Total EV (¢)", "Confidence (%)", "Regime", "Status",
+    "Outcome PNL ($)", "ROI (%)", "Action", "Taker",
   ];
   const rows = fills.map((f) => [
     f.trade_id,
     f.order_id,
     new Date(f.created_time).toISOString(),
+    f.resolvedAsset,
     f.ticker,
     f.side.toUpperCase(),
-    f.side === "yes" ? f.yes_price : f.no_price,
+    f.fillPrice,
+    f.paperTrade?.entryPrice ?? "",
+    f.slippage ?? "",
     f.count,
+    f.capitalUSD.toFixed(2),
+    f.paperTrade ? (f.paperTrade.modelProbability * 100).toFixed(2) : "",
+    f.paperTrade ? f.paperTrade.ev.toFixed(2) : "",
+    f.totalEV !== null ? f.totalEV.toFixed(2) : "",
+    f.paperTrade ? f.paperTrade.confidence.toFixed(1) : "",
+    f.paperTrade?.regime ?? "",
+    f.paperTrade?.outcome ?? "",
+    f.paperTrade?.pnlTotal != null ? (f.paperTrade.pnlTotal / 100).toFixed(2) : "",
+    f.roi !== null ? f.roi.toFixed(1) : "",
     f.action,
     f.is_taker ? "yes" : "no",
   ]);
@@ -61,12 +147,14 @@ function exportToCsv(fills: KalshiFill[], filter: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `kalshi_fills_${filter}_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `kalshi_fills_${timeFilter}_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
 
-const columns: ColumnDef<KalshiFill>[] = [
+// ─── Column definitions ───────────────────────────────────────────────────────
+
+const columns: ColumnDef<EnrichedFill>[] = [
   {
     accessorKey: "created_time",
     header: "Time",
@@ -74,112 +162,273 @@ const columns: ColumnDef<KalshiFill>[] = [
       const ts = new Date(info.getValue<string>());
       return (
         <div className="flex flex-col">
-          <span className="text-xs text-text font-mono">
-            {ts.toLocaleTimeString()}
-          </span>
-          <span className="text-xs text-muted">
-            {ts.toLocaleDateString()}
-          </span>
+          <span className="text-xs text-text font-mono">{ts.toLocaleTimeString()}</span>
+          <span className="text-xs text-muted">{ts.toLocaleDateString()}</span>
         </div>
       );
     },
   },
   {
-    accessorKey: "ticker",
-    header: "Market",
+    accessorKey: "resolvedAsset",
+    header: "Asset",
+    cell: (info) => (
+      <span className="font-semibold text-text">{info.getValue<string>()}</span>
+    ),
+  },
+  {
+    id: "status",
+    header: "Status",
+    accessorFn: (row) => row.paperTrade?.outcome ?? null,
     cell: (info) => {
-      const ticker = info.getValue<string>();
-      return (
-        <div className="flex flex-col">
-          <span className="font-semibold text-text">{tickerToAsset(ticker)}</span>
-          <span className="text-xs text-muted font-mono">{ticker.split("-")[0]}</span>
-        </div>
-      );
+      const outcome = info.getValue<string | null>();
+      if (!outcome) return <span className="text-muted">—</span>;
+      return <OutcomeBadge outcome={outcome} />;
     },
   },
   {
     accessorKey: "side",
     header: "Side",
+    cell: (info) => <DirectionBadge dir={info.getValue<string>()} />,
+  },
+  {
+    id: "regime",
+    header: "Regime",
+    accessorFn: (row) => row.paperTrade?.regime ?? null,
     cell: (info) => {
-      const side = info.getValue<string>();
-      return (
-        <span className={side === "yes" ? "badge badge-blue" : "badge badge-gray"}>
-          {side.toUpperCase()}
-        </span>
-      );
+      const regime = info.getValue<string | null>();
+      if (!regime) return <span className="text-muted">—</span>;
+      return <RegimeBadge regime={regime} />;
     },
   },
   {
-    id: "fillPrice",
+    accessorKey: "fillPrice",
     header: "Fill Price",
+    cell: (info) => (
+      <span className="font-mono text-sm" style={{ color: V }}>
+        {info.getValue<number>()}¢
+      </span>
+    ),
+  },
+  {
+    id: "modelEntry",
+    header: "Model Entry",
+    accessorFn: (row) => row.paperTrade?.entryPrice ?? null,
     cell: (info) => {
-      const fill = info.row.original;
-      const price = fill.side === "yes" ? fill.yes_price : fill.no_price;
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      return <span className="font-mono text-sm text-muted">{v}¢</span>;
+    },
+  },
+  {
+    accessorKey: "slippage",
+    header: "Slippage",
+    cell: (info) => {
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      const color = v > 0 ? "text-loss" : v < 0 ? "text-profit" : "text-muted";
       return (
-        <span className="font-mono text-sm" style={{ color: "#8B5CF6" }}>
-          {price}¢
+        <span className={`font-mono text-sm ${color}`}>
+          {v >= 0 ? "+" : ""}{v}¢
         </span>
       );
     },
   },
   {
     accessorKey: "count",
-    header: "Contracts",
+    header: "Qty",
     cell: (info) => (
-      <span className="font-mono text-sm font-semibold">
-        {info.getValue<number>()}
-      </span>
+      <span className="font-mono text-sm font-semibold">{info.getValue<number>()}</span>
     ),
   },
   {
-    accessorKey: "action",
-    header: "Action",
+    accessorKey: "capitalUSD",
+    header: "Capital",
     cell: (info) => (
-      <span className="text-xs text-muted uppercase font-mono">
-        {info.getValue<string>()}
-      </span>
+      <span className="font-mono text-sm">${info.getValue<number>().toFixed(2)}</span>
     ),
   },
   {
-    accessorKey: "order_id",
-    header: "Order ID",
+    id: "modelP",
+    header: "Model P",
+    accessorFn: (row) => row.paperTrade?.modelProbability ?? null,
     cell: (info) => {
-      const id = info.getValue<string>();
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      return <span className="font-mono text-sm text-accent">{(v * 100).toFixed(1)}%</span>;
+    },
+  },
+  {
+    id: "evPerContract",
+    header: "EV/ct",
+    accessorFn: (row) => row.paperTrade?.ev ?? null,
+    cell: (info) => {
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      const color = v > 0 ? "text-profit" : v < 0 ? "text-loss" : "text-muted";
       return (
-        <span className="font-mono text-xs text-muted" title={id}>
-          {id.slice(0, 8)}…
+        <span className={`font-mono text-sm ${color}`}>
+          {v >= 0 ? "+" : ""}{v.toFixed(1)}¢
+        </span>
+      );
+    },
+  },
+  {
+    accessorKey: "totalEV",
+    header: "Total EV",
+    cell: (info) => {
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      const color = v > 0 ? "text-profit" : v < 0 ? "text-loss" : "text-muted";
+      return (
+        <span className={`font-mono text-sm ${color}`}>
+          {v >= 0 ? "+" : ""}{v.toFixed(1)}¢
+        </span>
+      );
+    },
+  },
+  {
+    id: "confidence",
+    header: "Conf",
+    accessorFn: (row) => row.paperTrade?.confidence ?? null,
+    cell: (info) => {
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      return <span className="font-mono text-sm">{v.toFixed(0)}%</span>;
+    },
+  },
+  {
+    id: "outcomePnl",
+    header: "Outcome PNL",
+    accessorFn: (row) => {
+      if (!row.paperTrade) return null;
+      if (row.paperTrade.outcome !== "pending" && row.paperTrade.pnlTotal != null)
+        return row.paperTrade.pnlTotal / 100;
+      return row.estimatedPnlUSD;
+    },
+    cell: (info) => {
+      const fill = info.row.original;
+      if (!fill.paperTrade) return <span className="text-muted">—</span>;
+      if (fill.paperTrade.outcome !== "pending" && fill.paperTrade.pnlTotal != null) {
+        const usd = fill.paperTrade.pnlTotal / 100;
+        const color = usd >= 0 ? "text-profit" : "text-loss";
+        return (
+          <span className={`font-mono text-sm font-semibold ${color}`}>
+            {fmtUSD(usd)}
+          </span>
+        );
+      }
+      if (fill.estimatedPnlUSD != null) {
+        return (
+          <span className="font-mono text-sm italic text-muted">
+            ~${fill.estimatedPnlUSD.toFixed(2)}
+          </span>
+        );
+      }
+      return <span className="text-muted">—</span>;
+    },
+  },
+  {
+    accessorKey: "roi",
+    header: "ROI",
+    cell: (info) => {
+      const v = info.getValue<number | null>();
+      if (v == null) return <span className="text-muted">—</span>;
+      const color = v >= 0 ? "text-profit" : "text-loss";
+      return (
+        <span className={`font-mono text-sm ${color}`}>
+          {v >= 0 ? "+" : ""}{v.toFixed(1)}%
         </span>
       );
     },
   },
 ];
 
+// ─── Main Component ───────────────────────────────────────────────────────────
+
 export default function KalshiFillsTable() {
-  const [filter, setFilter] = useState<Filter>("all");
-  const [search, setSearch] = useState("");
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [assetSearch, setAssetSearch] = useState("");
+  const [minEVInput, setMinEVInput] = useState("");
+  const [minEVCents, setMinEVCents] = useState<number | null>(null);
   const [sorting, setSorting] = useState<SortingState>([
     { id: "created_time", desc: true },
   ]);
 
-  const { data: fills, error, isLoading } = useSWR<KalshiFill[]>(
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const v = parseFloat(minEVInput);
+      setMinEVCents(isNaN(v) ? null : v);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [minEVInput]);
+
+  const { data: fills, error: fillsError, isLoading } = useSWR<KalshiFill[]>(
     "kalshi-fills",
     getFills,
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
-  const filteredFills = useMemo(() => {
-    if (!fills) return [];
-    const cutoff = filterCutoff(filter);
-    return fills.filter((f) => {
-      const inTime = new Date(f.created_time).getTime() >= cutoff;
-      const inSearch =
-        !search ||
-        tickerToAsset(f.ticker).toLowerCase().includes(search.toLowerCase()) ||
-        f.ticker.toLowerCase().includes(search.toLowerCase()) ||
-        f.order_id.toLowerCase().includes(search.toLowerCase());
-      return inTime && inSearch;
+  const { data: trades, error: tradesError } = useSWR<Trade[]>(
+    "trades-pnl",
+    getTrades,
+    { refreshInterval: 5000, revalidateOnFocus: false }
+  );
+
+  const enrichedFills = useMemo((): EnrichedFill[] => {
+    const byOrderId = new Map<string, Trade>(
+      (trades ?? [])
+        .filter((t): t is Trade & { orderId: string } => t.isLive === true && !!t.orderId)
+        .map((t) => [t.orderId, t])
+    );
+    return (fills ?? []).map((fill): EnrichedFill => {
+      const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+      const pt = byOrderId.get(fill.order_id) ?? null;
+      const totalEV = pt !== null ? pt.ev * fill.count : null;
+      const roi =
+        pt !== null &&
+        pt.outcome !== "pending" &&
+        pt.pnlTotal != null &&
+        fillPrice * fill.count > 0
+          ? (pt.pnlTotal / (fillPrice * fill.count)) * 100
+          : null;
+      return {
+        ...fill,
+        resolvedAsset: pt?.asset ?? tickerToAsset(fill.ticker),
+        fillPrice,
+        paperTrade: pt,
+        slippage: pt !== null ? fillPrice - pt.entryPrice : null,
+        capitalUSD: (fillPrice * fill.count) / 100,
+        totalEV,
+        estimatedPnlUSD: totalEV !== null ? totalEV / 100 : null,
+        roi,
+      };
     });
-  }, [fills, filter, search]);
+  }, [fills, trades]);
+
+  const filteredFills = useMemo((): EnrichedFill[] => {
+    const cutoff = filterCutoff(timeFilter);
+    return enrichedFills.filter((f) => {
+      if (new Date(f.created_time).getTime() < cutoff) return false;
+      if (statusFilter !== "all") {
+        if (!f.paperTrade) return false;
+        if (f.paperTrade.outcome !== statusFilter) return false;
+      }
+      if (assetSearch) {
+        const q = assetSearch.toLowerCase();
+        if (
+          !f.resolvedAsset.toLowerCase().includes(q) &&
+          !f.ticker.toLowerCase().includes(q) &&
+          !f.order_id.toLowerCase().includes(q)
+        )
+          return false;
+      }
+      if (minEVCents !== null) {
+        if (!f.paperTrade || f.paperTrade.ev < minEVCents) return false;
+      }
+      return true;
+    });
+  }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents]);
 
   const table = useReactTable({
     data: filteredFills,
@@ -192,6 +441,8 @@ export default function KalshiFillsTable() {
     initialState: { pagination: { pageSize: 20 } },
   });
 
+  const matchedCount = enrichedFills.filter((f) => f.paperTrade !== null).length;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
@@ -201,29 +452,54 @@ export default function KalshiFillsTable() {
         <div className="flex items-center gap-2 flex-wrap">
           <input
             type="text"
-            placeholder="Search market..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search asset..."
+            value={assetSearch}
+            onChange={(e) => setAssetSearch(e.target.value)}
             className="px-3 py-1 text-xs rounded bg-panel border border-border text-text placeholder-muted focus:outline-none focus:border-accent"
           />
+          <input
+            type="number"
+            placeholder="Min EV (¢)"
+            value={minEVInput}
+            onChange={(e) => setMinEVInput(e.target.value)}
+            className="px-3 py-1 text-xs rounded bg-panel border border-border text-text placeholder-muted focus:outline-none focus:border-accent w-24"
+          />
+          {tradesError && (
+            <span className="flex items-center gap-1 text-xs text-loss">
+              <AlertCircle size={11} />
+              Model context unavailable
+            </span>
+          )}
           <div className="flex gap-1">
-            {FILTERS.map((f) => (
+            {STATUS_FILTERS.map((f) => (
               <button
                 key={f.value}
-                onClick={() => setFilter(f.value)}
+                onClick={() => setStatusFilter(f.value)}
                 className={`px-2 py-1 text-xs rounded transition-colors ${
-                  filter === f.value
-                    ? "text-white"
-                    : "text-muted hover:text-text"
+                  statusFilter === f.value ? "text-white" : "text-muted hover:text-text"
                 }`}
-                style={filter === f.value ? { backgroundColor: "#8B5CF6" } : {}}
+                style={statusFilter === f.value ? { backgroundColor: V } : {}}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-1">
+            {TIME_FILTERS.map((f) => (
+              <button
+                key={f.value}
+                onClick={() => setTimeFilter(f.value)}
+                className={`px-2 py-1 text-xs rounded transition-colors ${
+                  timeFilter === f.value ? "text-white" : "text-muted hover:text-text"
+                }`}
+                style={timeFilter === f.value ? { backgroundColor: V } : {}}
               >
                 {f.label}
               </button>
             ))}
           </div>
           <button
-            onClick={() => exportToCsv(filteredFills, filter)}
+            onClick={() => exportToCsv(filteredFills, timeFilter)}
             disabled={filteredFills.length === 0}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-border text-muted hover:text-text hover:border-accent transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >
@@ -234,7 +510,7 @@ export default function KalshiFillsTable() {
       </div>
 
       <div className="panel p-0 overflow-hidden">
-        {error && (
+        {fillsError && (
           <div className="flex items-center gap-2 text-loss text-sm p-4">
             <AlertCircle size={14} />
             Failed to load fills — check Kalshi credentials on Railway
@@ -285,7 +561,7 @@ export default function KalshiFillsTable() {
                         colSpan={columns.length}
                         className="text-center text-muted py-10 text-sm"
                       >
-                        No fills found — orders may still be resting or no trades placed yet
+                        No fills found — try adjusting filters or wait for trades to settle
                       </td>
                     </tr>
                   ) : (
@@ -311,6 +587,11 @@ export default function KalshiFillsTable() {
             <div className="flex items-center justify-between px-4 py-3 border-t border-border text-xs text-muted">
               <span>
                 {filteredFills.length} fill{filteredFills.length !== 1 ? "s" : ""}
+                {matchedCount > 0 && (
+                  <span className="ml-1.5" style={{ color: V }}>
+                    · {matchedCount} with model context
+                  </span>
+                )}
               </span>
               <div className="flex items-center gap-2">
                 <button
