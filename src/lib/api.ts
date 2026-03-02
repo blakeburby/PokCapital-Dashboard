@@ -63,6 +63,17 @@ export async function getLogs(): Promise<string[]> {
   }
 }
 
+export interface AccountBalance {
+  balanceCents: number;
+  balanceDollars: number;
+}
+
+export async function getBalance(): Promise<AccountBalance> {
+  const res = await fetch("/api/balance", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/balance returned ${res.status}`);
+  return res.json();
+}
+
 export interface KalshiFill {
   trade_id: string;       // fill ID
   order_id: string;       // order that generated this fill

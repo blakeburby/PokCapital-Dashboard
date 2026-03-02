@@ -2,8 +2,8 @@
 
 import useSWR from "swr";
 import { useMemo } from "react";
-import { getTrades, type Trade } from "@/lib/api";
-import { TrendingUp, TrendingDown, Activity, Target, Award, AlertCircle } from "lucide-react";
+import { getTrades, getBalance, type Trade, type AccountBalance } from "@/lib/api";
+import { TrendingUp, TrendingDown, Activity, Target, Award, AlertCircle, Wallet } from "lucide-react";
 
 function fmt(n: number | undefined | null, decimals = 2): string {
   if (n == null || isNaN(n)) return "—";
@@ -110,6 +110,12 @@ export default function LiveStatsCards() {
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
+  const { data: balance } = useSWR<AccountBalance>(
+    "kalshi-balance",
+    getBalance,
+    { refreshInterval: 10_000, revalidateOnFocus: false }
+  );
+
   const liveTrades = useMemo(
     () => (allTrades ? allTrades.filter((t) => t.isLive === true) : []),
     [allTrades]
@@ -154,6 +160,13 @@ export default function LiveStatsCards() {
   const winRatePct = s.winRate;
 
   const cards: CardProps[] = [
+    {
+      label: "Live Balance",
+      value: balance ? `$${balance.balanceDollars.toFixed(2)}` : "—",
+      sub: "Kalshi account",
+      color: "profit",
+      icon: <Wallet size={12} />,
+    },
     {
       label: "Total Trades",
       value: String(s.totalTrades),
