@@ -535,6 +535,13 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
 
         {/* Right: filters + bulk action + CSV */}
         <div className="flex items-center gap-2 flex-wrap">
+          {/* Select All / Deselect All */}
+          <button
+            onClick={() => table.toggleAllRowsSelected(!table.getIsAllRowsSelected())}
+            className="px-2.5 py-1 text-xs rounded border border-border text-muted hover:text-text hover:border-accent transition-colors"
+          >
+            {table.getIsAllRowsSelected() ? "Deselect All" : `Select All (${filteredFills.length})`}
+          </button>
           {/* Bulk action */}
           {selectedCount > 0 && (
             <button
