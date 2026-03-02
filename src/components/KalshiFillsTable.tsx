@@ -57,7 +57,6 @@ const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
 ];
 
 const V = "#8B5CF6";
-const LS_KEY = "kalshi-hidden-fills";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -79,14 +78,6 @@ function fmtUSD(dollars: number): string {
   return dollars >= 0
     ? `+$${dollars.toFixed(2)}`
     : `-$${Math.abs(dollars).toFixed(2)}`;
-}
-
-function loadHiddenIds(): Set<string> {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(LS_KEY) ?? "[]"));
-  } catch {
-    return new Set();
-  }
 }
 
 // ─── Badge components ─────────────────────────────────────────────────────────
@@ -385,7 +376,12 @@ const allColumns: ColumnDef<EnrichedFill>[] = [checkboxColumn, ...dataColumns];
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function KalshiFillsTable() {
+interface Props {
+  hiddenIds: Set<string>;
+  setHiddenIds: React.Dispatch<React.SetStateAction<Set<string>>>;
+}
+
+export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
   const [timeFilter, setTimeFilter] = useState<TimeFilter>("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [assetSearch, setAssetSearch] = useState("");
@@ -396,12 +392,6 @@ export default function KalshiFillsTable() {
   ]);
   const [viewMode, setViewMode] = useState<ViewMode>("active");
   const [rowSelection, setRowSelection] = useState<Record<string, boolean>>({});
-  const [hiddenIds, setHiddenIds] = useState<Set<string>>(loadHiddenIds);
-
-  // Sync hidden IDs to localStorage
-  useEffect(() => {
-    localStorage.setItem(LS_KEY, JSON.stringify(Array.from(hiddenIds)));
-  }, [hiddenIds]);
 
   // Debounce EV filter input
   useEffect(() => {

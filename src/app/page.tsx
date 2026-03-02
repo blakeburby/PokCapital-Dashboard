@@ -8,8 +8,6 @@ import PaperTradingSection from "@/components/PaperTradingSection";
 import LiveTradingSection from "@/components/LiveTradingSection";
 import LiveStatsCards from "@/components/LiveStatsCards";
 import RealTradingSection from "@/components/RealTradingSection";
-import KalshiFillsStats from "@/components/KalshiFillsStats";
-import KalshiFillsTable from "@/components/KalshiFillsTable";
 import type { Trade } from "@/lib/api";
 
 const liveFilter = (t: Trade) => t.isLive === true;
@@ -70,15 +68,7 @@ export default function Dashboard() {
 
         {/* 1 — REAL TRADES (direct Kalshi account fills) */}
         <section>
-          <RealTradingSection
-            labels={[
-              "Account Overview",
-              "Fill History",
-            ]}
-          >
-            <KalshiFillsStats />
-            <KalshiFillsTable />
-          </RealTradingSection>
+          <RealTradingSection />
         </section>
 
         {/* 2 — LIVE TRADING */}

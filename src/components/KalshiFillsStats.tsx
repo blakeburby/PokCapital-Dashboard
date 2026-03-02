@@ -143,7 +143,11 @@ function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export default function KalshiFillsStats() {
+interface Props {
+  hiddenIds: Set<string>;
+}
+
+export default function KalshiFillsStats({ hiddenIds }: Props) {
   const { data: fills, error: fillsError, isLoading } = useSWR<KalshiFill[]>(
     "kalshi-fills",
     getFills,
@@ -158,8 +162,9 @@ export default function KalshiFillsStats() {
 
   const stats = useMemo(() => {
     const enriched = buildEnrichedFills(fills ?? [], trades ?? []);
-    return computeEnrichedStats(enriched);
-  }, [fills, trades]);
+    const visible = enriched.filter((f) => !hiddenIds.has(f.trade_id));
+    return computeEnrichedStats(visible);
+  }, [fills, trades, hiddenIds]);
 
   if (isLoading) {
     return (

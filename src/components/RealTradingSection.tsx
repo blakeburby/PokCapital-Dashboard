@@ -1,18 +1,28 @@
-import React from "react";
+"use client";
+
+import { useState, useEffect } from "react";
 import { BookOpen } from "lucide-react";
+import KalshiFillsStats from "@/components/KalshiFillsStats";
+import KalshiFillsTable from "@/components/KalshiFillsTable";
 
 const V = "#8B5CF6"; // violet-500
+const LS_KEY = "kalshi-hidden-fills";
 
-interface RealTradingSectionProps {
-  labels: string[];
-  children: React.ReactNode;
+function loadHiddenIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    return new Set(JSON.parse(localStorage.getItem(LS_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
 }
 
-export default function RealTradingSection({
-  labels,
-  children,
-}: RealTradingSectionProps) {
-  const childArray = React.Children.toArray(children);
+export default function RealTradingSection() {
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(loadHiddenIds);
+
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, JSON.stringify(Array.from(hiddenIds)));
+  }, [hiddenIds]);
 
   return (
     <div>
@@ -71,21 +81,26 @@ export default function RealTradingSection({
         </span>
       </div>
 
-      {/* Labeled children */}
+      {/* Sub-sections */}
       <div className="space-y-10">
-        {childArray.map((child, i) => (
-          <div key={i}>
-            {labels[i] && (
-              <p
-                className="text-xs font-semibold uppercase tracking-widest mb-3"
-                style={{ color: "rgba(139,92,246,0.7)" }}
-              >
-                {labels[i]}
-              </p>
-            )}
-            {child}
-          </div>
-        ))}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(139,92,246,0.7)" }}
+          >
+            Account Overview
+          </p>
+          <KalshiFillsStats hiddenIds={hiddenIds} />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(139,92,246,0.7)" }}
+          >
+            Fill History
+          </p>
+          <KalshiFillsTable hiddenIds={hiddenIds} setHiddenIds={setHiddenIds} />
+        </div>
       </div>
     </div>
   );
