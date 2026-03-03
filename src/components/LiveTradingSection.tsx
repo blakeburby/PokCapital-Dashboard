@@ -1,18 +1,32 @@
-import React from "react";
+"use client";
+
+import { useState, useEffect } from "react";
 import { Zap } from "lucide-react";
+import LiveOverviewCards from "@/components/LiveOverviewCards";
+import LiveTradeTable from "@/components/LiveTradeTable";
+import PnlChart from "@/components/PnlChart";
+import type { Trade } from "@/lib/api";
 
 const G = "#10B981"; // emerald-500
+const LS_KEY = "live-hidden-trades";
 
-interface LiveTradingSectionProps {
-  labels: string[];
-  children: React.ReactNode;
+const liveFilter = (t: Trade) => t.isLive === true;
+
+function loadHiddenIds(): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    return new Set(JSON.parse(localStorage.getItem(LS_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
 }
 
-export default function LiveTradingSection({
-  labels,
-  children,
-}: LiveTradingSectionProps) {
-  const childArray = React.Children.toArray(children);
+export default function LiveTradingSection() {
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(loadHiddenIds);
+
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, JSON.stringify(Array.from(hiddenIds)));
+  }, [hiddenIds]);
 
   return (
     <div>
@@ -71,21 +85,35 @@ export default function LiveTradingSection({
         </span>
       </div>
 
-      {/* Labeled children */}
+      {/* Sub-sections */}
       <div className="space-y-10">
-        {childArray.map((child, i) => (
-          <div key={i}>
-            {labels[i] && (
-              <p
-                className="text-xs font-semibold uppercase tracking-widest mb-3"
-                style={{ color: "rgba(16,185,129,0.7)" }}
-              >
-                {labels[i]}
-              </p>
-            )}
-            {child}
-          </div>
-        ))}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(16,185,129,0.7)" }}
+          >
+            Live Overview
+          </p>
+          <LiveOverviewCards hiddenIds={hiddenIds} />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(16,185,129,0.7)" }}
+          >
+            Live Trade History
+          </p>
+          <LiveTradeTable hiddenIds={hiddenIds} setHiddenIds={setHiddenIds} />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(16,185,129,0.7)" }}
+          >
+            Live PNL Analytics
+          </p>
+          <PnlChart filterFn={liveFilter} />
+        </div>
       </div>
     </div>
   );

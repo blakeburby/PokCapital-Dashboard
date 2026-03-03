@@ -6,11 +6,9 @@ import TradeTable from "@/components/TradeTable";
 import LogsPanel from "@/components/LogsPanel";
 import PaperTradingSection from "@/components/PaperTradingSection";
 import LiveTradingSection from "@/components/LiveTradingSection";
-import LiveStatsCards from "@/components/LiveStatsCards";
 import RealTradingSection from "@/components/RealTradingSection";
 import type { Trade } from "@/lib/api";
 
-const liveFilter = (t: Trade) => t.isLive === true;
 const paperFilter = (t: Trade) => !t.isLive;
 
 export default function Dashboard() {
@@ -73,17 +71,7 @@ export default function Dashboard() {
 
         {/* 2 — LIVE TRADING */}
         <section>
-          <LiveTradingSection
-            labels={[
-              "Live Strategy Overview",
-              "Live PNL Analytics",
-              "Live Trade History",
-            ]}
-          >
-            <LiveStatsCards />
-            <PnlChart filterFn={liveFilter} />
-            <TradeTable filterFn={liveFilter} />
-          </LiveTradingSection>
+          <LiveTradingSection />
         </section>
 
         {/* 3 — Strategy Overview (all trades combined) */}
