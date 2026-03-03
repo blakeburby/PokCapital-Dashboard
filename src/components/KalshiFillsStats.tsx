@@ -5,18 +5,17 @@ import { useMemo } from "react";
 import { getFills, getTrades, type KalshiFill, type Trade } from "@/lib/api";
 import {
   Activity,
-  DollarSign,
-  Hash,
   TrendingUp,
   TrendingDown,
   Target,
+  Award,
   AlertCircle,
   Zap,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface EnrichedFill extends KalshiFill {
+export interface EnrichedFill extends KalshiFill {
   fillPrice: number;
   capitalUSD: number;
   paperTrade: Trade | null;
@@ -73,7 +72,7 @@ function MetricCard({ label, value, sub, color = "violet", icon }: CardProps) {
 
 // ─── Stats computation ────────────────────────────────────────────────────────
 
-function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): EnrichedFill[] {
+export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): EnrichedFill[] {
   const byOrderId = new Map<string, Trade>(
     trades
       .filter((t): t is Trade & { orderId: string } => t.isLive === true && !!t.orderId)
@@ -94,15 +93,13 @@ function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): EnrichedFill[
 
 function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
   const totalFills = enrichedFills.length;
-  const totalContracts = enrichedFills.reduce((s, f) => s + f.count, 0);
-  const totalDeployedUSD = enrichedFills.reduce((s, f) => s + f.capitalUSD, 0);
 
   const matched = enrichedFills.filter((f) => f.paperTrade !== null);
   const settled = matched.filter(
     (f) => f.paperTrade!.outcome !== "pending" && f.paperTrade!.pnlTotal != null
   );
   const wins = settled.filter((f) => f.paperTrade!.outcome === "win");
-  const losses = settled.filter((f) => f.paperTrade!.outcome === "loss");
+  const lossesCount = settled.length - wins.length;
 
   const realizedPnlUSD =
     settled.reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0) / 100;
@@ -114,30 +111,44 @@ function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
       ? matched.reduce((s, f) => s + f.paperTrade!.ev, 0) / matched.length
       : null;
 
-  const avgSlippageCents =
+  const avgConfidence =
     matched.length > 0
-      ? matched.reduce((s, f) => s + (f.slippage ?? 0), 0) / matched.length
+      ? matched.reduce((s, f) => s + f.paperTrade!.confidence, 0) / matched.length
       : null;
 
   const grossWinsCents = wins.reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0);
   const grossLossesCents = Math.abs(
-    losses.reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0)
+    settled
+      .filter((f) => f.paperTrade!.outcome === "loss")
+      .reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0)
   );
   const profitFactor =
     grossLossesCents > 0 ? grossWinsCents / grossLossesCents : null;
 
+  const pnls = settled.map((f) => f.paperTrade!.pnlTotal ?? 0);
+  const bestTradePnl = pnls.length ? Math.max(...pnls) : 0;
+  const worstTradePnl = pnls.length ? Math.min(...pnls) : 0;
+  const mean = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : 0;
+  const variance = pnls.length
+    ? pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length
+    : 0;
+  const sharpeApprox = variance > 0 ? mean / Math.sqrt(variance) : 0;
+
   return {
     totalFills,
-    totalContracts,
-    totalDeployedUSD,
+    settledCount: settled.length,
+    winsCount: wins.length,
+    lossesCount,
     realizedPnlUSD,
     winRate,
     avgEVCents,
-    avgSlippageCents,
+    avgConfidence,
     profitFactor,
+    bestTradePnl,
+    worstTradePnl,
+    sharpeApprox,
     matchedCount: matched.length,
-    settledCount: settled.length,
-    winsCount: wins.length,
+    pendingCount: matched.length - settled.length,
   };
 }
 
@@ -168,13 +179,10 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
 
   if (isLoading) {
     return (
-      <div>
-        <p className="section-label">Account Overview</p>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-          {Array.from({ length: 8 }).map((_, i) => (
-            <div key={i} className="panel animate-pulse h-20 bg-panel" />
-          ))}
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        {Array.from({ length: 12 }).map((_, i) => (
+          <div key={i} className="panel animate-pulse h-20 bg-panel" />
+        ))}
       </div>
     );
   }
@@ -189,25 +197,10 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
   }
 
   const pnlColor: ColorVariant =
-    stats.realizedPnlUSD > 0
-      ? "profit"
-      : stats.realizedPnlUSD < 0
-      ? "loss"
-      : "neutral";
+    stats.realizedPnlUSD > 0 ? "profit" : stats.realizedPnlUSD < 0 ? "loss" : "neutral";
 
   const winRateColor: ColorVariant =
-    stats.winRate === null
-      ? "neutral"
-      : stats.winRate >= 0.5
-      ? "profit"
-      : "loss";
-
-  const slippageColor: ColorVariant =
-    stats.avgSlippageCents === null
-      ? "neutral"
-      : stats.avgSlippageCents > 0
-      ? "loss"   // overpaid = bad
-      : "profit"; // saved = good
+    stats.winRate === null ? "neutral" : stats.winRate >= 0.5 ? "profit" : "loss";
 
   const pfColor: ColorVariant =
     stats.profitFactor === null
@@ -218,91 +211,102 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
       ? "neutral"
       : "loss";
 
+  const pnlCents = stats.realizedPnlUSD * 100;
+  const fmtUSD = (cents: number) => {
+    const d = cents / 100;
+    return d >= 0 ? `+$${d.toFixed(2)}` : `-$${Math.abs(d).toFixed(2)}`;
+  };
+
   const cards: CardProps[] = [
     {
-      label: "Total Fills",
+      label: "Total Trades",
       value: String(stats.totalFills),
-      sub: "executed fill events",
+      sub: `${stats.settledCount} settled`,
       color: "neutral",
       icon: <Activity size={12} />,
     },
     {
-      label: "Contracts Filled",
-      value: String(stats.totalContracts),
-      sub: `${stats.matchedCount} with model context`,
-      color: "neutral",
-      icon: <Hash size={12} />,
-    },
-    {
-      label: "Realized PNL",
-      value:
-        stats.realizedPnlUSD >= 0
-          ? `+$${stats.realizedPnlUSD.toFixed(2)}`
-          : `-$${Math.abs(stats.realizedPnlUSD).toFixed(2)}`,
-      sub: `${stats.settledCount} settled trades`,
-      color: pnlColor,
-      icon: <DollarSign size={12} />,
-    },
-    {
-      label: "Win Rate",
-      value:
-        stats.winRate !== null ? `${(stats.winRate * 100).toFixed(1)}%` : "—",
-      sub:
-        stats.settledCount > 0
-          ? `${stats.winsCount} wins / ${stats.settledCount} settled`
-          : "no settled trades",
-      color: winRateColor,
+      label: "Wins",
+      value: String(stats.winsCount),
+      sub: "settled wins",
+      color: "profit",
       icon: <TrendingUp size={12} />,
     },
     {
-      label: "Total Deployed",
-      value: `$${stats.totalDeployedUSD.toFixed(2)}`,
-      sub: "capital deployed",
-      color: "neutral",
-      icon: <DollarSign size={12} />,
+      label: "Losses",
+      value: String(stats.lossesCount),
+      sub: "settled losses",
+      color: stats.lossesCount > 0 ? "loss" : "neutral",
+      icon: <TrendingDown size={12} />,
     },
     {
-      label: "Avg EV/ct",
-      value:
-        stats.avgEVCents !== null
-          ? `${stats.avgEVCents >= 0 ? "+" : ""}${stats.avgEVCents.toFixed(1)}¢`
-          : "—",
-      sub: `${stats.matchedCount} matched fills`,
-      color:
-        stats.avgEVCents === null
-          ? "neutral"
-          : stats.avgEVCents > 0
-          ? "profit"
-          : "neutral",
+      label: "Win Rate",
+      value: stats.winRate !== null ? `${(stats.winRate * 100).toFixed(1)}%` : "—",
+      sub: "of settled trades",
+      color: winRateColor,
+    },
+    {
+      label: "Total PNL",
+      value: fmtUSD(pnlCents),
+      sub: `${stats.realizedPnlUSD >= 0 ? "+" : ""}${stats.realizedPnlUSD.toFixed(2)} USD`,
+      color: pnlColor,
+      icon: <TrendingUp size={12} />,
+    },
+    {
+      label: "Avg EV",
+      value: stats.avgEVCents !== null ? `${stats.avgEVCents.toFixed(2)}¢` : "—",
+      sub: "per fill",
+      color: stats.avgEVCents !== null && stats.avgEVCents > 0 ? "profit" : "neutral",
       icon: <Zap size={12} />,
     },
     {
-      label: "Avg Slippage",
-      value:
-        stats.avgSlippageCents !== null
-          ? `${stats.avgSlippageCents >= 0 ? "+" : ""}${stats.avgSlippageCents.toFixed(1)}¢`
-          : "—",
-      sub: "vs model entry price",
-      color: slippageColor,
-      icon: <TrendingDown size={12} />,
+      label: "Avg Confidence",
+      value: stats.avgConfidence !== null ? `${stats.avgConfidence.toFixed(1)}%` : "—",
+      sub: "model confidence",
+      color: "violet",
     },
     {
       label: "Profit Factor",
       value: stats.profitFactor !== null ? stats.profitFactor.toFixed(2) : "—",
-      sub: "gross wins / losses",
+      sub: "gross profit / loss",
       color: pfColor,
       icon: <Target size={12} />,
+    },
+    {
+      label: "Sharpe Approx",
+      value:
+        stats.settledCount > 1 && stats.sharpeApprox !== 0
+          ? stats.sharpeApprox.toFixed(2)
+          : "—",
+      sub: "risk-adjusted return",
+      color: stats.sharpeApprox >= 1 ? "profit" : "neutral",
+    },
+    {
+      label: "Best Trade",
+      value: stats.settledCount > 0 ? fmtUSD(stats.bestTradePnl) : "—",
+      sub: "highest single PNL",
+      color: "profit",
+      icon: <Award size={12} />,
+    },
+    {
+      label: "Worst Trade",
+      value: stats.settledCount > 0 ? fmtUSD(stats.worstTradePnl) : "—",
+      sub: "lowest single PNL",
+      color: stats.worstTradePnl < 0 ? "loss" : "neutral",
+    },
+    {
+      label: "Settled Trades",
+      value: String(stats.settledCount),
+      sub: `${stats.pendingCount} pending`,
+      color: "neutral",
     },
   ];
 
   return (
-    <div>
-      <p className="section-label">Account Overview</p>
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-        {cards.map((c) => (
-          <MetricCard key={c.label} {...c} />
-        ))}
-      </div>
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+      {cards.map((c) => (
+        <MetricCard key={c.label} {...c} />
+      ))}
     </div>
   );
 }

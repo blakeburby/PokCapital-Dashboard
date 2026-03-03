@@ -94,6 +94,25 @@ export async function getFills(): Promise<KalshiFill[]> {
   return res.json();
 }
 
+export interface KalshiMarketPrice {
+  yes_bid: number;
+  yes_ask: number;
+  last_price: number;
+  status: string;  // "open" | "closed" | "determined"
+  result: string;  // "" | "yes" | "no"
+}
+
+export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice | null> {
+  try {
+    const res = await fetch(`/api/market?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.market ?? null) as KalshiMarketPrice | null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Price feeds (public exchange APIs, called client-side) ---
 
 export interface ExchangePrice {

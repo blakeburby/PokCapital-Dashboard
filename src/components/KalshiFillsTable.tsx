@@ -11,7 +11,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { getFills, getTrades, type KalshiFill, type Trade } from "@/lib/api";
+import { getFills, getTrades, getMarketPrice, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
 import {
   ChevronUp,
   ChevronDown,
@@ -372,7 +372,26 @@ const dataColumns: ColumnDef<EnrichedFill>[] = [
   },
 ];
 
-const allColumns: ColumnDef<EnrichedFill>[] = [checkboxColumn, ...dataColumns];
+// ─── Live market price hook ───────────────────────────────────────────────────
+
+function useMarketPrices(tickers: string[]): Map<string, KalshiMarketPrice> {
+  const key = tickers.length
+    ? `market-prices:${Array.from(tickers).sort().join(",")}`
+    : null;
+  const { data } = useSWR<Map<string, KalshiMarketPrice>>(
+    key,
+    async () => {
+      const pairs = await Promise.all(
+        tickers.map((t) => getMarketPrice(t).then((p) => [t, p] as const))
+      );
+      return new Map(
+        pairs.filter((pair): pair is [string, KalshiMarketPrice] => pair[1] !== null)
+      );
+    },
+    { refreshInterval: 5_000, revalidateOnFocus: false }
+  );
+  return data ?? new Map();
+}
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
@@ -476,9 +495,48 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     });
   }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents, viewMode, hiddenIds]);
 
+  // Live odds for pending fills
+  const pendingTickers = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          enrichedFills
+            .filter((f) => f.paperTrade?.outcome === "pending")
+            .map((f) => f.ticker)
+        )
+      ),
+    [enrichedFills]
+  );
+  const marketPrices = useMarketPrices(pendingTickers);
+
+  const liveOddsColumn: ColumnDef<EnrichedFill> = {
+    id: "liveOdds",
+    header: "Yes Price",
+    enableSorting: false,
+    cell: ({ row }) => {
+      const fill = row.original;
+      if (fill.paperTrade?.outcome !== "pending")
+        return <span className="text-muted">—</span>;
+      const mp = marketPrices.get(fill.ticker);
+      if (!mp)
+        return <span className="text-muted animate-pulse text-xs">…</span>;
+      return (
+        <span className="font-mono text-xs" style={{ color: V }}>
+          {mp.yes_bid}–{mp.yes_ask}¢
+        </span>
+      );
+    },
+  };
+
+  const columns = useMemo<ColumnDef<EnrichedFill>[]>(
+    () => [checkboxColumn, ...dataColumns, liveOddsColumn],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [marketPrices]
+  );
+
   const table = useReactTable({
     data: filteredFills,
-    columns: allColumns,
+    columns,
     state: { sorting, rowSelection },
     onSortingChange: setSorting,
     onRowSelectionChange: setRowSelection,
@@ -679,7 +737,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
                   {table.getRowModel().rows.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={allColumns.length}
+                        colSpan={columns.length}
                         className="text-center text-muted py-10 text-sm"
                       >
                         {viewMode === "hidden"

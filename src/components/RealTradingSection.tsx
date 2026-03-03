@@ -1,9 +1,12 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import useSWR from "swr";
 import { BookOpen } from "lucide-react";
 import KalshiFillsStats from "@/components/KalshiFillsStats";
 import KalshiFillsTable from "@/components/KalshiFillsTable";
+import RealAccountChart from "@/components/RealAccountChart";
+import { getBalance, type AccountBalance } from "@/lib/api";
 
 const V = "#8B5CF6"; // violet-500
 const LS_KEY = "kalshi-hidden-fills";
@@ -23,6 +26,12 @@ export default function RealTradingSection() {
   useEffect(() => {
     localStorage.setItem(LS_KEY, JSON.stringify(Array.from(hiddenIds)));
   }, [hiddenIds]);
+
+  const { data: balance } = useSWR<AccountBalance>(
+    "kalshi-balance",
+    getBalance,
+    { refreshInterval: 5_000, revalidateOnFocus: false }
+  );
 
   return (
     <div>
@@ -69,16 +78,25 @@ export default function RealTradingSection() {
             </p>
           </div>
         </div>
-        <span
-          className="font-mono text-xs px-2.5 py-1 rounded mt-0.5"
-          style={{
-            backgroundColor: "rgba(139,92,246,0.15)",
-            color: V,
-            border: "1px solid rgba(139,92,246,0.3)",
-          }}
-        >
-          ACCOUNT DATA
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className="font-mono font-semibold tracking-tight"
+            style={{ fontSize: "1.5rem", color: V }}
+          >
+            {balance ? `$${balance.balanceDollars.toFixed(2)}` : "—"}
+          </span>
+          <span className="text-xs text-muted">Live Balance</span>
+          <span
+            className="font-mono text-xs px-2.5 py-0.5 rounded"
+            style={{
+              backgroundColor: "rgba(139,92,246,0.15)",
+              color: V,
+              border: "1px solid rgba(139,92,246,0.3)",
+            }}
+          >
+            ACCOUNT DATA
+          </span>
+        </div>
       </div>
 
       {/* Sub-sections */}
@@ -91,6 +109,15 @@ export default function RealTradingSection() {
             Account Overview
           </p>
           <KalshiFillsStats hiddenIds={hiddenIds} />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(139,92,246,0.7)" }}
+          >
+            Account Value Over Time
+          </p>
+          <RealAccountChart />
         </div>
         <div>
           <p
