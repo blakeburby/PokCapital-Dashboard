@@ -511,7 +511,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
 
   const liveOddsColumn: ColumnDef<EnrichedFill> = {
     id: "liveOdds",
-    header: "Yes Price",
+    header: "Live Odds",
     enableSorting: false,
     cell: ({ row }) => {
       const fill = row.original;
@@ -520,10 +520,13 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
       const mp = marketPrices.get(fill.ticker);
       if (!mp)
         return <span className="text-muted animate-pulse text-xs">…</span>;
+      const noBid = 100 - mp.yes_ask;
+      const noAsk = 100 - mp.yes_bid;
       return (
-        <span className="font-mono text-xs" style={{ color: V }}>
-          {mp.yes_bid}–{mp.yes_ask}¢
-        </span>
+        <div className="flex flex-col gap-0.5 font-mono text-xs leading-tight">
+          <span style={{ color: V }}>Y {mp.yes_bid}–{mp.yes_ask}¢</span>
+          <span className="text-muted">N {noBid}–{noAsk}¢</span>
+        </div>
       );
     },
   };
