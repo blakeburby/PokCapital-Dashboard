@@ -11,7 +11,7 @@ import {
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
-import { getFills, getTrades, getMarketPrice, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
+import { getFills, getTrades, getMarketPrice, deriveOutcome, derivePnlUSD, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
 import {
   ChevronUp,
   ChevronDown,
@@ -35,8 +35,6 @@ interface EnrichedFill extends KalshiFill {
   slippage: number | null;
   capitalUSD: number;
   totalEV: number | null;
-  estimatedPnlUSD: number | null;
-  roi: number | null;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -86,10 +84,10 @@ function OutcomeBadge({ outcome }: { outcome: string }) {
   const cls =
     outcome === "win"
       ? "badge badge-green"
-      : outcome === "loss"
+      : outcome === "loss" || outcome === "error"
       ? "badge badge-red"
       : "badge badge-yellow";
-  return <span className={cls}>{outcome}</span>;
+  return <span className={cls}>{outcome === "error" ? "ERROR" : outcome}</span>;
 }
 
 function DirectionBadge({ dir }: { dir: string }) {
@@ -137,9 +135,9 @@ function exportToCsv(fills: EnrichedFill[], timeFilter: string) {
     f.totalEV !== null ? f.totalEV.toFixed(2) : "",
     f.paperTrade ? f.paperTrade.confidence.toFixed(1) : "",
     f.paperTrade?.regime ?? "",
-    f.paperTrade?.outcome ?? "",
-    f.paperTrade?.pnlTotal != null ? (f.paperTrade.pnlTotal / 100).toFixed(2) : "",
-    f.roi !== null ? f.roi.toFixed(1) : "",
+    "",  // outcome derived from Kalshi at display time, not pre-computed
+    "",  // PnL derived from Kalshi at display time, not pre-computed
+    "",  // ROI derived from Kalshi at display time, not pre-computed
     f.action,
     f.is_taker ? "yes" : "no",
   ]);
@@ -204,16 +202,8 @@ const dataColumns: ColumnDef<EnrichedFill>[] = [
       <span className="font-semibold text-text">{info.getValue<string>()}</span>
     ),
   },
-  {
-    id: "status",
-    header: "Status",
-    accessorFn: (row) => row.paperTrade?.outcome ?? null,
-    cell: (info) => {
-      const outcome = info.getValue<string | null>();
-      if (!outcome) return <span className="text-muted">—</span>;
-      return <OutcomeBadge outcome={outcome} />;
-    },
-  },
+  // NOTE: status / outcomePnl / roi columns are defined inside the component
+  // so they can close over `marketPrices`. They are injected via the `columns` useMemo.
   {
     accessorKey: "side",
     header: "Side",
@@ -325,51 +315,7 @@ const dataColumns: ColumnDef<EnrichedFill>[] = [
       return <span className="font-mono text-sm">{v.toFixed(0)}%</span>;
     },
   },
-  {
-    id: "outcomePnl",
-    header: "Outcome PNL",
-    accessorFn: (row) => {
-      if (!row.paperTrade) return null;
-      if (row.paperTrade.outcome !== "pending" && row.paperTrade.pnlTotal != null)
-        return row.paperTrade.pnlTotal / 100;
-      return row.estimatedPnlUSD;
-    },
-    cell: (info) => {
-      const fill = info.row.original;
-      if (!fill.paperTrade) return <span className="text-muted">—</span>;
-      if (fill.paperTrade.outcome !== "pending" && fill.paperTrade.pnlTotal != null) {
-        const usd = fill.paperTrade.pnlTotal / 100;
-        const color = usd >= 0 ? "text-profit" : "text-loss";
-        return (
-          <span className={`font-mono text-sm font-semibold ${color}`}>
-            {fmtUSD(usd)}
-          </span>
-        );
-      }
-      if (fill.estimatedPnlUSD != null) {
-        return (
-          <span className="font-mono text-sm italic text-muted">
-            ~${fill.estimatedPnlUSD.toFixed(2)}
-          </span>
-        );
-      }
-      return <span className="text-muted">—</span>;
-    },
-  },
-  {
-    accessorKey: "roi",
-    header: "ROI",
-    cell: (info) => {
-      const v = info.getValue<number | null>();
-      if (v == null) return <span className="text-muted">—</span>;
-      const color = v >= 0 ? "text-profit" : "text-loss";
-      return (
-        <span className={`font-mono text-sm ${color}`}>
-          {v >= 0 ? "+" : ""}{v.toFixed(1)}%
-        </span>
-      );
-    },
-  },
+  // NOTE: outcomePnl and roi columns are defined inside the component (see `columns` useMemo)
 ];
 
 // ─── Live market price hook ───────────────────────────────────────────────────
@@ -443,13 +389,6 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
       const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
       const pt = byOrderId.get(fill.order_id) ?? null;
       const totalEV = pt !== null ? pt.ev * fill.count : null;
-      const roi =
-        pt !== null &&
-        pt.outcome !== "pending" &&
-        pt.pnlTotal != null &&
-        fillPrice * fill.count > 0
-          ? (pt.pnlTotal / (fillPrice * fill.count)) * 100
-          : null;
       return {
         ...fill,
         resolvedAsset: pt?.asset ?? tickerToAsset(fill.ticker),
@@ -458,11 +397,17 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
         slippage: pt !== null ? fillPrice - pt.entryPrice : null,
         capitalUSD: (fillPrice * fill.count) / 100,
         totalEV,
-        estimatedPnlUSD: totalEV !== null ? totalEV / 100 : null,
-        roi,
       };
     });
   }, [fills, trades]);
+
+  // Fetch Kalshi market data for ALL fill tickers so we can derive authoritative outcomes
+  // Must be declared before filteredFills (which uses deriveOutcome via marketPrices)
+  const allTickers = useMemo(
+    () => Array.from(new Set(enrichedFills.map((f) => f.ticker))),
+    [enrichedFills]
+  );
+  const marketPrices = useMarketPrices(allTickers);
 
   const filteredFills = useMemo((): EnrichedFill[] => {
     const cutoff = filterCutoff(timeFilter);
@@ -472,10 +417,10 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
       if (viewMode === "hidden" && !hiddenIds.has(f.trade_id)) return false;
       // Time filter
       if (new Date(f.created_time).getTime() < cutoff) return false;
-      // Status filter
+      // Status filter — use Kalshi-derived outcome, not paper store
       if (statusFilter !== "all") {
-        if (!f.paperTrade) return false;
-        if (f.paperTrade.outcome !== statusFilter) return false;
+        const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+        if (outcome !== statusFilter) return false;
       }
       // Asset search
       if (assetSearch) {
@@ -493,21 +438,56 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
       }
       return true;
     });
-  }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents, viewMode, hiddenIds]);
+  }, [enrichedFills, timeFilter, statusFilter, assetSearch, minEVCents, viewMode, hiddenIds, marketPrices]);
 
-  // Live odds for pending fills
-  const pendingTickers = useMemo(
-    () =>
-      Array.from(
-        new Set(
-          enrichedFills
-            .filter((f) => f.paperTrade?.outcome === "pending")
-            .map((f) => f.ticker)
-        )
-      ),
-    [enrichedFills]
-  );
-  const marketPrices = useMarketPrices(pendingTickers);
+  // Columns that need marketPrices closure are defined here (not in module-level dataColumns)
+  const statusColumn: ColumnDef<EnrichedFill> = {
+    id: "status",
+    header: "Status",
+    cell: ({ row }) => {
+      const f = row.original;
+      return <OutcomeBadge outcome={deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker))} />;
+    },
+  };
+
+  const outcomePnlColumn: ColumnDef<EnrichedFill> = {
+    id: "outcomePnl",
+    header: "Outcome PNL",
+    cell: ({ row }) => {
+      const f = row.original;
+      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+      const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+      if (pnlUSD !== null) {
+        return (
+          <span className={`font-mono text-sm font-semibold ${pnlUSD >= 0 ? "text-profit" : "text-loss"}`}>
+            {fmtUSD(pnlUSD)}
+          </span>
+        );
+      }
+      if (outcome === "error") return <span className="font-mono text-sm text-loss">ERROR</span>;
+      if (f.totalEV !== null) {
+        return <span className="font-mono text-sm italic text-muted">~${(f.totalEV / 100).toFixed(2)}</span>;
+      }
+      return <span className="text-muted">—</span>;
+    },
+  };
+
+  const roiColumn: ColumnDef<EnrichedFill> = {
+    id: "roi",
+    header: "ROI",
+    cell: ({ row }) => {
+      const f = row.original;
+      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+      const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+      if (pnlUSD === null || f.capitalUSD === 0) return <span className="text-muted">—</span>;
+      const roi = (pnlUSD / f.capitalUSD) * 100;
+      return (
+        <span className={`font-mono text-sm ${roi >= 0 ? "text-profit" : "text-loss"}`}>
+          {roi >= 0 ? "+" : ""}{roi.toFixed(1)}%
+        </span>
+      );
+    },
+  };
 
   const liveOddsColumn: ColumnDef<EnrichedFill> = {
     id: "liveOdds",
@@ -515,11 +495,10 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     enableSorting: false,
     cell: ({ row }) => {
       const fill = row.original;
-      if (fill.paperTrade?.outcome !== "pending")
-        return <span className="text-muted">—</span>;
+      const outcome = deriveOutcome(fill.side, fill.created_time, marketPrices.get(fill.ticker));
+      if (outcome !== "pending") return <span className="text-muted">—</span>;
       const mp = marketPrices.get(fill.ticker);
-      if (!mp)
-        return <span className="text-muted animate-pulse text-xs">…</span>;
+      if (!mp) return <span className="text-muted animate-pulse text-xs">…</span>;
       const noBid = 100 - mp.yes_ask;
       const noAsk = 100 - mp.yes_bid;
       return (
@@ -532,7 +511,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
   };
 
   const columns = useMemo<ColumnDef<EnrichedFill>[]>(
-    () => [checkboxColumn, ...dataColumns, liveOddsColumn],
+    () => [checkboxColumn, statusColumn, ...dataColumns, outcomePnlColumn, roiColumn, liveOddsColumn],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [marketPrices]
   );

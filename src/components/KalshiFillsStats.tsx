@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useMemo } from "react";
-import { getFills, getTrades, type KalshiFill, type Trade } from "@/lib/api";
+import { getFills, getTrades, getMarketPrice, deriveOutcome, derivePnlUSD, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
 import {
   Activity,
   TrendingUp,
@@ -70,6 +70,23 @@ function MetricCard({ label, value, sub, color = "violet", icon }: CardProps) {
   );
 }
 
+// ─── Market price hook ────────────────────────────────────────────────────────
+
+function useMarketPrices(tickers: string[]): Map<string, KalshiMarketPrice> {
+  const key = tickers.length ? `market-prices:${[...tickers].sort().join(",")}` : null;
+  const { data } = useSWR<Map<string, KalshiMarketPrice>>(
+    key,
+    async () => {
+      const pairs = await Promise.all(
+        tickers.map((t) => getMarketPrice(t).then((p) => [t, p] as const))
+      );
+      return new Map(pairs.filter((pair): pair is [string, KalshiMarketPrice] => pair[1] !== null));
+    },
+    { refreshInterval: 5_000, revalidateOnFocus: false }
+  );
+  return data ?? new Map();
+}
+
 // ─── Stats computation ────────────────────────────────────────────────────────
 
 export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): EnrichedFill[] {
@@ -91,21 +108,33 @@ export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): Enrich
   });
 }
 
-function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
+function computeEnrichedStats(
+  enrichedFills: EnrichedFill[],
+  marketPrices: Map<string, KalshiMarketPrice>
+) {
   const totalFills = enrichedFills.length;
 
-  const matched = enrichedFills.filter((f) => f.paperTrade !== null);
-  const settled = matched.filter(
-    (f) => f.paperTrade!.outcome !== "pending" && f.paperTrade!.pnlTotal != null
+  // Derive outcome and PnL from Kalshi's authoritative result
+  const pnlCentsForFill = (f: EnrichedFill): number => {
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+    return pnlUSD !== null ? pnlUSD * 100 : 0;
+  };
+
+  const settled = enrichedFills.filter((f) => {
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+    return outcome === "win" || outcome === "loss";
+  });
+  const wins = settled.filter((f) =>
+    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker)) === "win"
   );
-  const wins = settled.filter((f) => f.paperTrade!.outcome === "win");
   const lossesCount = settled.length - wins.length;
 
-  const realizedPnlUSD =
-    settled.reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0) / 100;
+  const realizedPnlUSD = settled.reduce((s, f) => s + pnlCentsForFill(f), 0) / 100;
 
   const winRate = settled.length > 0 ? wins.length / settled.length : null;
 
+  const matched = enrichedFills.filter((f) => f.paperTrade !== null);
   const avgEVCents =
     matched.length > 0
       ? matched.reduce((s, f) => s + f.paperTrade!.ev, 0) / matched.length
@@ -116,16 +145,16 @@ function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
       ? matched.reduce((s, f) => s + f.paperTrade!.confidence, 0) / matched.length
       : null;
 
-  const grossWinsCents = wins.reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0);
+  const grossWinsCents = wins.reduce((s, f) => s + pnlCentsForFill(f), 0);
   const grossLossesCents = Math.abs(
     settled
-      .filter((f) => f.paperTrade!.outcome === "loss")
-      .reduce((s, f) => s + (f.paperTrade!.pnlTotal ?? 0), 0)
+      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker)) === "loss")
+      .reduce((s, f) => s + pnlCentsForFill(f), 0)
   );
   const profitFactor =
     grossLossesCents > 0 ? grossWinsCents / grossLossesCents : null;
 
-  const pnls = settled.map((f) => f.paperTrade!.pnlTotal ?? 0);
+  const pnls = settled.map(pnlCentsForFill);
   const bestTradePnl = pnls.length ? Math.max(...pnls) : 0;
   const worstTradePnl = pnls.length ? Math.min(...pnls) : 0;
   const mean = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : 0;
@@ -148,7 +177,7 @@ function computeEnrichedStats(enrichedFills: EnrichedFill[]) {
     worstTradePnl,
     sharpeApprox,
     matchedCount: matched.length,
-    pendingCount: matched.length - settled.length,
+    pendingCount: enrichedFills.length - settled.length,
   };
 }
 
@@ -171,11 +200,18 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
+  // Fetch Kalshi market data for all fill tickers to derive authoritative outcomes
+  const allTickers = useMemo(
+    () => Array.from(new Set((fills ?? []).map((f) => f.ticker))),
+    [fills]
+  );
+  const marketPrices = useMarketPrices(allTickers);
+
   const stats = useMemo(() => {
     const enriched = buildEnrichedFills(fills ?? [], trades ?? []);
     const visible = enriched.filter((f) => !hiddenIds.has(f.trade_id));
-    return computeEnrichedStats(visible);
-  }, [fills, trades, hiddenIds]);
+    return computeEnrichedStats(visible, marketPrices);
+  }, [fills, trades, hiddenIds, marketPrices]);
 
   if (isLoading) {
     return (

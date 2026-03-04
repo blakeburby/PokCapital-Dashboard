@@ -102,6 +102,38 @@ export interface KalshiMarketPrice {
   result: string;  // "" | "yes" | "no"
 }
 
+/**
+ * Derive trade outcome directly from Kalshi's authoritative market result.
+ * Returns "error" when the market should be settled but Kalshi data is unavailable.
+ */
+export function deriveOutcome(
+  side: "yes" | "no",
+  createdTime: string,
+  mp: KalshiMarketPrice | undefined
+): "win" | "loss" | "pending" | "error" {
+  if (!mp) {
+    const ageMs = Date.now() - new Date(createdTime).getTime();
+    return ageMs > 20 * 60_000 ? "error" : "pending";
+  }
+  if (mp.status === "determined" && mp.result) {
+    return side === mp.result ? "win" : "loss";
+  }
+  return "pending";
+}
+
+/**
+ * Calculate actual PnL in USD from fill price and Kalshi-derived outcome.
+ * Returns null for pending or error outcomes.
+ */
+export function derivePnlUSD(
+  fillPrice: number,
+  count: number,
+  outcome: "win" | "loss" | "pending" | "error"
+): number | null {
+  if (outcome === "pending" || outcome === "error") return null;
+  return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
+}
+
 export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice | null> {
   try {
     const res = await fetch(`/api/market?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" });
