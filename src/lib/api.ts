@@ -109,8 +109,11 @@ export interface KalshiMarketPrice {
 export function deriveOutcome(
   side: "yes" | "no",
   createdTime: string,
-  mp: KalshiMarketPrice | undefined
+  mp: KalshiMarketPrice | undefined,
+  paperOutcome?: "win" | "loss" | "pending"
 ): "win" | "loss" | "pending" | "error" {
+  // Prefer the pre-computed outcome from the backend when already settled
+  if (paperOutcome === "win" || paperOutcome === "loss") return paperOutcome;
   if (!mp) {
     const ageMs = Date.now() - new Date(createdTime).getTime();
     return ageMs > 20 * 60_000 ? "error" : "pending";

@@ -116,17 +116,17 @@ function computeEnrichedStats(
 
   // Derive outcome and PnL from Kalshi's authoritative result
   const pnlCentsForFill = (f: EnrichedFill): number => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
     return pnlUSD !== null ? pnlUSD * 100 : 0;
   };
 
   const settled = enrichedFills.filter((f) => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker));
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     return outcome === "win" || outcome === "loss";
   });
   const wins = settled.filter((f) =>
-    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker)) === "win"
+    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "win"
   );
   const lossesCount = settled.length - wins.length;
 
@@ -148,7 +148,7 @@ function computeEnrichedStats(
   const grossWinsCents = wins.reduce((s, f) => s + pnlCentsForFill(f), 0);
   const grossLossesCents = Math.abs(
     settled
-      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker)) === "loss")
+      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
       .reduce((s, f) => s + pnlCentsForFill(f), 0)
   );
   const profitFactor =
