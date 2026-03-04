@@ -7,7 +7,7 @@ import { Terminal, RefreshCw } from "lucide-react";
 
 export default function LogsPanel() {
   const [manualRefresh, setManualRefresh] = useState(0);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const { data: logs, error, isLoading, mutate } = useSWR<string[]>(
     ["logs", manualRefresh],
@@ -15,9 +15,10 @@ export default function LogsPanel() {
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
-  // Auto-scroll to bottom when new logs arrive
+  // Auto-scroll the log container (not the page) when new logs arrive
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, [logs]);
 
   const handleRefresh = () => {
@@ -77,6 +78,7 @@ export default function LogsPanel() {
 
         {/* Log output */}
         <div
+          ref={scrollContainerRef}
           className="overflow-y-auto p-4 font-mono text-xs leading-relaxed"
           style={{
             height: 280,
@@ -135,7 +137,6 @@ export default function LogsPanel() {
               </div>
             ))}
 
-          <div ref={bottomRef} />
         </div>
 
         {/* Footer bar */}
