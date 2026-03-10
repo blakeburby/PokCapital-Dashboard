@@ -1,3 +1,5 @@
+// ─── Stats ────────────────────────────────────────────────────────────────────
+
 export interface Stats {
   totalTrades: number;
   settledTrades: number;
@@ -13,14 +15,18 @@ export interface Stats {
   sharpeApprox: number;
 }
 
+// ─── Trade ────────────────────────────────────────────────────────────────────
+
 export interface Trade {
   id: string;
+  source?: "auto" | "manual";
+  ticker?: string;
   asset: string;
   floorStrike: number;
   closeTime: string;
   entryTimestamp: number;
   settledAt: number | null;
-  regime: string;
+  regime: "R1" | "R2" | "R3";
   direction: "yes" | "no";
   entryPrice: number;
   suggestedSize: number;
@@ -32,9 +38,105 @@ export interface Trade {
   outcome: "win" | "loss" | "pending";
   pnlCents: number | null;
   pnlTotal: number | null;
+  finalCryptoPrice?: number | null;
   isLive?: boolean;
   orderId?: string;
-  liveCount?: number; // actual contracts placed (may differ from suggestedSize)
+  liveCount?: number;
+}
+
+// ─── Account Balance ──────────────────────────────────────────────────────────
+
+export interface AccountBalance {
+  balanceCents: number;
+  balanceDollars: number;
+}
+
+// ─── Kalshi Fills ─────────────────────────────────────────────────────────────
+
+export interface KalshiFill {
+  trade_id: string;
+  order_id: string;
+  ticker: string;
+  action: "buy" | "sell";
+  side: "yes" | "no";
+  count: number;
+  yes_price: number;
+  no_price: number;
+  is_taker: boolean;
+  created_time: string;
+}
+
+// ─── Kalshi Market Price ──────────────────────────────────────────────────────
+
+export interface KalshiMarketPrice {
+  yes_bid: number;
+  yes_ask: number;
+  last_price: number;
+  status: string;
+  result: string;
+}
+
+// ─── Backend Health ───────────────────────────────────────────────────────────
+
+export interface BackendHealth {
+  status: "ok" | "error" | "unreachable";
+  timestamp: string;
+  uptime: number;
+  uptimeMinutes: number;
+  version: string;
+  environment: string;
+  liveTradingEnabled: boolean;
+  maxTradeCents: number;
+  activeWorkers: string[];
+  tradeCount: number;
+  pendingTrades: number;
+  settledTrades: number;
+  logCount: number;
+  lastLogTimestamp: string | null;
+  lastHeartbeatTimestamp: string | null;
+  heartbeatIntervalMs: number;
+  latencyMs: number | null;
+  engineConfig: {
+    evMinCents: number;
+    evMaxCents: number;
+    minEntryPriceCents: number;
+    stabilityWindow: number;
+    tradingWindowOpenMs: number;
+    tradingWindowCloseMs: number;
+  };
+  error?: string;
+}
+
+// ─── API Fetch Helpers ────────────────────────────────────────────────────────
+
+/** Safely normalize a trade from backend, providing defaults for missing fields */
+function normalizeTrade(raw: Record<string, unknown>): Trade {
+  return {
+    id: String(raw.id ?? ""),
+    source: (raw.source as Trade["source"]) ?? undefined,
+    ticker: raw.ticker != null ? String(raw.ticker) : undefined,
+    asset: String(raw.asset ?? ""),
+    floorStrike: Number(raw.floorStrike ?? 0),
+    closeTime: String(raw.closeTime ?? ""),
+    entryTimestamp: Number(raw.entryTimestamp ?? 0),
+    settledAt: raw.settledAt != null ? Number(raw.settledAt) : null,
+    regime: (raw.regime as Trade["regime"]) ?? "R1",
+    direction: (raw.direction as Trade["direction"]) ?? "yes",
+    entryPrice: Number(raw.entryPrice ?? 0),
+    suggestedSize: Number(raw.suggestedSize ?? 1),
+    modelProbability: Number(raw.modelProbability ?? 0),
+    marketProbability: Number(raw.marketProbability ?? 0),
+    ev: Number(raw.ev ?? 0),
+    kellyFraction: Number(raw.kellyFraction ?? 0),
+    confidence: Number(raw.confidence ?? 0),
+    outcome: (raw.outcome as Trade["outcome"]) ?? "pending",
+    pnlCents: raw.pnlCents != null ? Number(raw.pnlCents) : null,
+    pnlTotal: raw.pnlTotal != null ? Number(raw.pnlTotal) : null,
+    finalCryptoPrice: raw.finalCryptoPrice != null ? Number(raw.finalCryptoPrice) : null,
+    isLive: raw.isLive === true,
+    orderId: raw.orderId != null ? String(raw.orderId) : undefined,
+    liveCount: raw.liveCount != null ? Number(raw.liveCount) : undefined,
+  };
 }
 
 // Stats, trades, and logs go through Vercel API proxy routes to avoid CORS.
@@ -48,7 +150,9 @@ export async function getStats(): Promise<Stats> {
 export async function getTrades(): Promise<Trade[]> {
   const res = await fetch("/api/trades", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/trades returned ${res.status}`);
-  return res.json();
+  const raw = await res.json();
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeTrade);
 }
 
 export async function getLogs(): Promise<string[]> {
@@ -64,28 +168,10 @@ export async function getLogs(): Promise<string[]> {
   }
 }
 
-export interface AccountBalance {
-  balanceCents: number;
-  balanceDollars: number;
-}
-
 export async function getBalance(): Promise<AccountBalance> {
   const res = await fetch("/api/balance", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/balance returned ${res.status}`);
   return res.json();
-}
-
-export interface KalshiFill {
-  trade_id: string;       // fill ID
-  order_id: string;       // order that generated this fill
-  ticker: string;         // e.g. "KXBTC15M-24..."
-  action: "buy" | "sell";
-  side: "yes" | "no";
-  count: number;          // contracts filled
-  yes_price: number;      // cents (0-100)
-  no_price: number;       // cents (0-100)
-  is_taker: boolean;
-  created_time: string;   // ISO-8601
 }
 
 export async function getFills(): Promise<KalshiFill[]> {
@@ -94,12 +180,23 @@ export async function getFills(): Promise<KalshiFill[]> {
   return res.json();
 }
 
-export interface KalshiMarketPrice {
-  yes_bid: number;
-  yes_ask: number;
-  last_price: number;
-  status: string;  // "open" | "closed" | "determined"
-  result: string;  // "" | "yes" | "no"
+export async function getHealth(): Promise<BackendHealth> {
+  const res = await fetch("/api/health", { cache: "no-store" });
+  const data = await res.json();
+  return data as BackendHealth;
+}
+
+// ─── Market Price / Outcome Derivation ────────────────────────────────────────
+
+export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice | null> {
+  try {
+    const res = await fetch(`/api/market?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.market ?? null) as KalshiMarketPrice | null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -112,7 +209,6 @@ export function deriveOutcome(
   mp: KalshiMarketPrice | undefined,
   paperOutcome?: "win" | "loss" | "pending"
 ): "win" | "loss" | "pending" | "error" {
-  // Prefer the pre-computed outcome from the backend when already settled
   if (paperOutcome === "win" || paperOutcome === "loss") return paperOutcome;
   if (!mp) {
     const ageMs = Date.now() - new Date(createdTime).getTime();
@@ -137,18 +233,7 @@ export function derivePnlUSD(
   return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
 }
 
-export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice | null> {
-  try {
-    const res = await fetch(`/api/market?ticker=${encodeURIComponent(ticker)}`, { cache: "no-store" });
-    if (!res.ok) return null;
-    const data = await res.json();
-    return (data.market ?? null) as KalshiMarketPrice | null;
-  } catch {
-    return null;
-  }
-}
-
-// --- Price feeds (public exchange APIs, called client-side) ---
+// ─── Price Feeds (public exchange APIs, called client-side) ───────────────────
 
 export interface ExchangePrice {
   exchange: string;

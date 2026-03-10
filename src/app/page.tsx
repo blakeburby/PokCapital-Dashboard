@@ -7,6 +7,7 @@ import LogsPanel from "@/components/LogsPanel";
 import PaperTradingSection from "@/components/PaperTradingSection";
 import LiveTradingSection from "@/components/LiveTradingSection";
 import RealTradingSection from "@/components/RealTradingSection";
+import BackendStatusPanel from "@/components/BackendStatusPanel";
 import type { Trade } from "@/lib/api";
 
 const paperFilter = (t: Trade) => !t.isLive;
@@ -64,6 +65,11 @@ export default function Dashboard() {
       {/* ── ALGORITHM MONITOR ── */}
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-10">
 
+        {/* 0 — BACKEND OBSERVABILITY */}
+        <section>
+          <BackendStatusPanel />
+        </section>
+
         {/* 1 — REAL TRADES (direct Kalshi account fills) */}
         <section>
           <RealTradingSection />
@@ -101,7 +107,7 @@ export default function Dashboard() {
         className="text-center text-xs text-muted py-8"
         style={{ borderTop: "1px solid #1F2937" }}
       >
-        PokCapital Algorithm Monitor · Unified Monte Carlo Trading Engine ·{" "}
+        PokCapital Algorithm Monitor &middot; Unified Monte Carlo Trading Engine &middot;{" "}
         <span className="font-mono">v1.0.0</span>
       </footer>
     </main>

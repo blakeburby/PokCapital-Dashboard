@@ -13,6 +13,7 @@ import {
   AlertCircle,
   Zap,
 } from "lucide-react";
+import DataSourceFooter from "@/components/DataSourceFooter";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,12 +36,12 @@ function MetricCard({ label, value, sub, color = "green", icon }: CardProps) {
     color === "profit"
       ? "text-profit"
       : color === "loss"
-      ? "text-loss"
-      : color === "accent"
-      ? "text-accent"
-      : color === "neutral"
-      ? "text-text"
-      : undefined; // green uses inline style
+        ? "text-loss"
+        : color === "accent"
+          ? "text-accent"
+          : color === "neutral"
+            ? "text-text"
+            : undefined; // green uses inline style
 
   return (
     <div className="panel flex flex-col gap-1 min-w-0">
@@ -157,24 +158,24 @@ export default function LiveOverviewCards({ hiddenIds }: Props) {
     stats.realizedPnlUSD > 0
       ? "profit"
       : stats.realizedPnlUSD < 0
-      ? "loss"
-      : "neutral";
+        ? "loss"
+        : "neutral";
 
   const winRateColor: ColorVariant =
     stats.winRate === null
       ? "neutral"
       : stats.winRate >= 0.5
-      ? "profit"
-      : "loss";
+        ? "profit"
+        : "loss";
 
   const pfColor: ColorVariant =
     stats.profitFactor === null
       ? "neutral"
       : stats.profitFactor >= 1.5
-      ? "profit"
-      : stats.profitFactor >= 1
-      ? "neutral"
-      : "loss";
+        ? "profit"
+        : stats.profitFactor >= 1
+          ? "neutral"
+          : "loss";
 
   const cards: CardProps[] = [
     {
@@ -230,8 +231,8 @@ export default function LiveOverviewCards({ hiddenIds }: Props) {
         stats.avgEVCents === null
           ? "neutral"
           : stats.avgEVCents > 0
-          ? "profit"
-          : "neutral",
+            ? "profit"
+            : "neutral",
       icon: <Zap size={12} />,
     },
     {
@@ -255,10 +256,13 @@ export default function LiveOverviewCards({ hiddenIds }: Props) {
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-      {cards.map((c) => (
-        <MetricCard key={c.label} {...c} />
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        {cards.map((c) => (
+          <MetricCard key={c.label} {...c} />
+        ))}
+      </div>
+      <DataSourceFooter endpoint="/trades" refreshInterval="5s" recordCount={stats.totalTrades} source="Backend API (live trades)" />
+    </>
   );
 }

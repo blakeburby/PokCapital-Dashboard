@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Zap,
 } from "lucide-react";
+import DataSourceFooter from "@/components/DataSourceFooter";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,12 +42,12 @@ function MetricCard({ label, value, sub, color = "violet", icon }: CardProps) {
     color === "profit"
       ? "text-profit"
       : color === "loss"
-      ? "text-loss"
-      : color === "accent"
-      ? "text-accent"
-      : color === "neutral"
-      ? "text-text"
-      : undefined; // violet uses inline style
+        ? "text-loss"
+        : color === "accent"
+          ? "text-accent"
+          : color === "neutral"
+            ? "text-text"
+            : undefined; // violet uses inline style
 
   return (
     <div className="panel flex flex-col gap-1 min-w-0">
@@ -242,10 +243,10 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
     stats.profitFactor === null
       ? "neutral"
       : stats.profitFactor >= 1.5
-      ? "profit"
-      : stats.profitFactor >= 1
-      ? "neutral"
-      : "loss";
+        ? "profit"
+        : stats.profitFactor >= 1
+          ? "neutral"
+          : "loss";
 
   const pnlCents = stats.realizedPnlUSD * 100;
   const fmtUSD = (cents: number) => {
@@ -339,10 +340,13 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
   ];
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-      {cards.map((c) => (
-        <MetricCard key={c.label} {...c} />
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        {cards.map((c) => (
+          <MetricCard key={c.label} {...c} />
+        ))}
+      </div>
+      <DataSourceFooter endpoint="/fills" recordCount={stats.totalFills} source="Kalshi Portfolio API" />
+    </>
   );
 }

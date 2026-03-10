@@ -3,6 +3,7 @@
 import useSWR from "swr";
 import { getStats, type Stats } from "@/lib/api";
 import { TrendingUp, TrendingDown, Activity, Target, Award, AlertCircle } from "lucide-react";
+import DataSourceFooter from "@/components/DataSourceFooter";
 
 function fmt(n: number | undefined | null, decimals = 2): string {
   if (n == null || isNaN(n)) return "—";
@@ -35,10 +36,10 @@ function MetricCard({ label, value, sub, color = "neutral", icon }: CardProps) {
     color === "profit"
       ? "text-profit"
       : color === "loss"
-      ? "text-loss"
-      : color === "accent"
-      ? "text-accent"
-      : "text-text";
+        ? "text-loss"
+        : color === "accent"
+          ? "text-accent"
+          : "text-text";
 
   return (
     <div className="panel flex flex-col gap-1 min-w-0">
@@ -176,6 +177,7 @@ export default function StatsCards() {
           <MetricCard key={c.label} {...c} />
         ))}
       </div>
+      <DataSourceFooter endpoint="/stats" recordCount={s.totalTrades} />
     </div>
   );
 }
