@@ -11,7 +11,18 @@ import {
   Tooltip,
   CartesianGrid,
 } from "recharts";
-import { getFills, getTrades, getBalance, type KalshiFill, type Trade, type AccountBalance } from "@/lib/api";
+import {
+  getFills,
+  getTrades,
+  getBalance,
+  getMarketPrice,
+  deriveOutcome,
+  derivePnlUSD,
+  type KalshiFill,
+  type Trade,
+  type AccountBalance,
+  type KalshiMarketPrice,
+} from "@/lib/api";
 import { buildEnrichedFills } from "@/components/KalshiFillsStats";
 
 const V = "#8B5CF6";
@@ -22,36 +33,66 @@ interface ChartPoint {
   label: string;
 }
 
+// Same pattern as KalshiFillsStats — fetches live market data for all tickers
+function useMarketPrices(tickers: string[]): Map<string, KalshiMarketPrice> {
+  const key = tickers.length ? `market-prices-chart:${[...tickers].sort().join(",")}` : null;
+  const { data } = useSWR<Map<string, KalshiMarketPrice>>(
+    key,
+    async () => {
+      const pairs = await Promise.all(
+        tickers.map((t) => getMarketPrice(t).then((p) => [t, p] as const))
+      );
+      return new Map(pairs.filter((pair): pair is [string, KalshiMarketPrice] => pair[1] !== null));
+    },
+    { refreshInterval: 5_000, revalidateOnFocus: false }
+  );
+  return data ?? new Map();
+}
+
 function buildChartData(
   fills: KalshiFill[],
   trades: Trade[],
-  balanceDollars: number
+  balanceDollars: number,
+  marketPrices: Map<string, KalshiMarketPrice>
 ): ChartPoint[] {
   const enriched = buildEnrichedFills(fills, trades);
 
-  // Keep only settled fills where we know the settledAt timestamp
+  // Keep only settled fills — determined from live Kalshi market data, not backend pnlTotal
   const settled = enriched
-    .filter(
-      (f) =>
-        f.paperTrade !== null &&
-        f.paperTrade.outcome !== "pending" &&
-        f.paperTrade.pnlTotal != null &&
-        f.paperTrade.settledAt != null
-    )
-    .sort((a, b) => a.paperTrade!.settledAt! - b.paperTrade!.settledAt!);
+    .filter((f) => {
+      const outcome = deriveOutcome(
+        f.side,
+        f.created_time,
+        marketPrices.get(f.ticker),
+        f.paperTrade?.outcome
+      );
+      return outcome === "win" || outcome === "loss";
+    })
+    .sort((a, b) => {
+      // Use settledAt if available, fall back to fill creation time
+      const tsA = a.paperTrade?.settledAt ?? new Date(a.created_time).getTime();
+      const tsB = b.paperTrade?.settledAt ?? new Date(b.created_time).getTime();
+      return tsA - tsB;
+    });
 
   if (settled.length === 0) return [];
 
-  // Reconstruct implied starting balance
-  const totalRealizedCents = settled.reduce(
-    (s, f) => s + (f.paperTrade!.pnlTotal ?? 0),
-    0
-  );
+  // Reconstruct implied starting balance using the same PnL formula as KalshiFillsStats
+  const totalRealizedCents = settled.reduce((s, f) => {
+    const outcome = deriveOutcome(
+      f.side,
+      f.created_time,
+      marketPrices.get(f.ticker),
+      f.paperTrade?.outcome
+    );
+    return s + (derivePnlUSD(f.fillPrice, f.count, outcome) ?? 0) * 100;
+  }, 0);
   const impliedStartDollars = balanceDollars - totalRealizedCents / 100;
 
   const points: ChartPoint[] = [];
   // Opening point just before first settlement
-  const firstTs = settled[0].paperTrade!.settledAt! - 1;
+  const firstTs =
+    (settled[0].paperTrade?.settledAt ?? new Date(settled[0].created_time).getTime()) - 1;
   points.push({
     time: firstTs,
     value: parseFloat(impliedStartDollars.toFixed(2)),
@@ -60,8 +101,14 @@ function buildChartData(
 
   let running = impliedStartDollars;
   for (const f of settled) {
-    running += (f.paperTrade!.pnlTotal ?? 0) / 100;
-    const ts = f.paperTrade!.settledAt!;
+    const outcome = deriveOutcome(
+      f.side,
+      f.created_time,
+      marketPrices.get(f.ticker),
+      f.paperTrade?.outcome
+    );
+    running += derivePnlUSD(f.fillPrice, f.count, outcome) ?? 0;
+    const ts = f.paperTrade?.settledAt ?? new Date(f.created_time).getTime();
     points.push({
       time: ts,
       value: parseFloat(running.toFixed(2)),
@@ -108,10 +155,16 @@ export default function RealAccountChart() {
     revalidateOnFocus: false,
   });
 
+  const allTickers = useMemo(
+    () => Array.from(new Set((fills ?? []).map((f) => f.ticker))),
+    [fills]
+  );
+  const marketPrices = useMarketPrices(allTickers);
+
   const chartData = useMemo(() => {
     if (!fills || !trades || !balance) return [];
-    return buildChartData(fills, trades, balance.balanceDollars);
-  }, [fills, trades, balance]);
+    return buildChartData(fills, trades, balance.balanceDollars, marketPrices);
+  }, [fills, trades, balance, marketPrices]);
 
   if (chartData.length < 2) {
     return (
