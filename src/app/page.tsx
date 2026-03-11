@@ -1,16 +1,7 @@
 "use client";
 
-import StatsCards from "@/components/StatsCards";
-import PnlChart from "@/components/PnlChart";
-import TradeTable from "@/components/TradeTable";
-import LogsPanel from "@/components/LogsPanel";
-import PaperTradingSection from "@/components/PaperTradingSection";
-import LiveTradingSection from "@/components/LiveTradingSection";
 import RealTradingSection from "@/components/RealTradingSection";
 import BackendStatusPanel from "@/components/BackendStatusPanel";
-import type { Trade } from "@/lib/api";
-
-const paperFilter = (t: Trade) => !t.isLive;
 
 export default function Dashboard() {
   return (
@@ -65,39 +56,14 @@ export default function Dashboard() {
       {/* ── ALGORITHM MONITOR ── */}
       <div className="max-w-screen-2xl mx-auto px-6 py-8 space-y-10">
 
-        {/* 0 — BACKEND OBSERVABILITY */}
+        {/* Backend Observability */}
         <section>
           <BackendStatusPanel />
         </section>
 
-        {/* 1 — REAL TRADES (direct Kalshi account fills) */}
+        {/* Real Trades (direct Kalshi account fills) */}
         <section>
           <RealTradingSection />
-        </section>
-
-        {/* 2 — LIVE TRADING */}
-        <section>
-          <LiveTradingSection />
-        </section>
-
-        {/* 3 — Strategy Overview (all trades combined) */}
-        <section>
-          <StatsCards />
-        </section>
-
-        {/* 4 — PAPER TRADING */}
-        <section>
-          <PaperTradingSection
-            labels={[
-              "Paper Trading PNL Analytics",
-              "Paper Trade History",
-              "Deploy Logs",
-            ]}
-          >
-            <PnlChart filterFn={paperFilter} />
-            <TradeTable filterFn={paperFilter} />
-            <LogsPanel />
-          </PaperTradingSection>
         </section>
 
       </div>
