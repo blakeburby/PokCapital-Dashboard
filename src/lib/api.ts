@@ -263,6 +263,11 @@ export async function getStatus(): Promise<BackendStatus | null> {
   }
 }
 
+// ─── Fee Awareness ────────────────────────────────────────────────────────────
+
+/** Note displayed alongside PnL figures to disclose that Kalshi fees are not deducted. */
+export const KALSHI_FEE_NOTE = "Gross PnL — Kalshi exchange fees not included";
+
 // ─── Market Price / Outcome Derivation ────────────────────────────────────────
 
 export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice | null> {
@@ -278,7 +283,13 @@ export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice 
 
 /**
  * Derive trade outcome directly from Kalshi's authoritative market result.
- * Returns "error" when the market should be settled but Kalshi data is unavailable.
+ *
+ * Priority order:
+ *   1. Kalshi market `result` (authoritative — exchange has settled the market)
+ *   2. Backend paper outcome (fallback when Kalshi data unavailable)
+ *   3. Age-based heuristic (error if market should have settled by now)
+ *
+ * Returns "error" when the market should be settled but no outcome is available.
  */
 export function deriveOutcome(
   side: "yes" | "no",
@@ -286,14 +297,22 @@ export function deriveOutcome(
   mp: KalshiMarketPrice | undefined,
   paperOutcome?: "win" | "loss" | "pending"
 ): "win" | "loss" | "pending" | "error" {
-  if (paperOutcome === "win" || paperOutcome === "loss") return paperOutcome;
+  // 1. Kalshi market data is the single source of truth when available
+  if (mp && mp.status === "determined" && mp.result) {
+    return side === mp.result ? "win" : "loss";
+  }
+
+  // 2. Fall back to backend paper outcome only when Kalshi data is absent
+  if (!mp && (paperOutcome === "win" || paperOutcome === "loss")) {
+    return paperOutcome;
+  }
+
+  // 3. If no data and the market is old enough, flag as error
   if (!mp) {
     const ageMs = Date.now() - new Date(createdTime).getTime();
     return ageMs > 20 * 60_000 ? "error" : "pending";
   }
-  if (mp.status === "determined" && mp.result) {
-    return side === mp.result ? "win" : "loss";
-  }
+
   return "pending";
 }
 

@@ -110,7 +110,11 @@ function RegimeBadge({ regime }: { regime: string }) {
 
 // ─── CSV export ───────────────────────────────────────────────────────────────
 
-function exportToCsv(fills: EnrichedFill[], timeFilter: string) {
+function exportToCsv(
+  fills: EnrichedFill[],
+  timeFilter: string,
+  marketPrices: Map<string, KalshiMarketPrice>
+) {
   const headers = [
     "Fill ID", "Order ID", "Time", "Asset", "Ticker",
     "Side", "Fill Price (¢)", "Model Entry (¢)", "Slippage (¢)",
@@ -118,29 +122,41 @@ function exportToCsv(fills: EnrichedFill[], timeFilter: string) {
     "Total EV (¢)", "Confidence (%)", "Regime", "Status",
     "Outcome PNL ($)", "ROI (%)", "Action", "Taker",
   ];
-  const rows = fills.map((f) => [
-    f.trade_id,
-    f.order_id,
-    new Date(f.created_time).toISOString(),
-    f.resolvedAsset,
-    f.ticker,
-    f.side.toUpperCase(),
-    f.fillPrice,
-    f.paperTrade?.entryPrice ?? "",
-    f.slippage ?? "",
-    f.count,
-    f.capitalUSD.toFixed(2),
-    f.paperTrade ? (f.paperTrade.modelProbability * 100).toFixed(2) : "",
-    f.paperTrade ? f.paperTrade.ev.toFixed(2) : "",
-    f.totalEV !== null ? f.totalEV.toFixed(2) : "",
-    f.paperTrade ? f.paperTrade.confidence.toFixed(1) : "",
-    f.paperTrade?.regime ?? "",
-    "",  // outcome derived from Kalshi at display time, not pre-computed
-    "",  // PnL derived from Kalshi at display time, not pre-computed
-    "",  // ROI derived from Kalshi at display time, not pre-computed
-    f.action,
-    f.is_taker ? "yes" : "no",
-  ]);
+  const rows = fills.map((f) => {
+    const outcome = deriveOutcome(
+      f.side,
+      f.created_time,
+      marketPrices.get(f.ticker),
+      f.paperTrade?.outcome
+    );
+    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+    const roi = pnlUSD !== null && f.capitalUSD > 0
+      ? ((pnlUSD / f.capitalUSD) * 100).toFixed(1)
+      : "";
+    return [
+      f.trade_id,
+      f.order_id,
+      new Date(f.created_time).toISOString(),
+      f.resolvedAsset,
+      f.ticker,
+      f.side.toUpperCase(),
+      f.fillPrice,
+      f.paperTrade?.entryPrice ?? "",
+      f.slippage ?? "",
+      f.count,
+      f.capitalUSD.toFixed(2),
+      f.paperTrade ? (f.paperTrade.modelProbability * 100).toFixed(2) : "",
+      f.paperTrade ? f.paperTrade.ev.toFixed(2) : "",
+      f.totalEV !== null ? f.totalEV.toFixed(2) : "",
+      f.paperTrade ? f.paperTrade.confidence.toFixed(1) : "",
+      f.paperTrade?.regime ?? "",
+      outcome,
+      pnlUSD !== null ? pnlUSD.toFixed(2) : "",
+      roi,
+      f.action,
+      f.is_taker ? "yes" : "no",
+    ];
+  });
   const csv = [headers, ...rows]
     .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
     .join("\n");
@@ -649,7 +665,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
           </div>
           {/* CSV export */}
           <button
-            onClick={() => exportToCsv(filteredFills, timeFilter)}
+            onClick={() => exportToCsv(filteredFills, timeFilter, marketPrices)}
             disabled={filteredFills.length === 0}
             className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded border border-border text-muted hover:text-text hover:border-accent transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
           >

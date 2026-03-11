@@ -135,8 +135,9 @@ export default function MonteCarloChart() {
       : Date.now() + 10 * 60 * 1000;
     const timeToExpiry = Math.max((closeTime - Date.now()) / 1000, 60);
 
-    // Derive vol from regime
-    const regime = classifyRegime(DEFAULT_VOL);
+    // Use backend regime (derived from real market data) instead of classifying
+    // a hardcoded constant, which always produced R2/0.40 vol.
+    const regime = latestTrade?.regime ?? classifyRegime(DEFAULT_VOL);
     const vol =
       regime === "R1" ? 0.25 : regime === "R2" ? DEFAULT_VOL : 0.65;
 

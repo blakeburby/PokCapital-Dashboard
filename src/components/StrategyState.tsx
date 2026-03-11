@@ -57,10 +57,10 @@ export default function StrategyState() {
       ? latestTrade.modelProbability - latestTrade.marketProbability
       : null;
 
-  const kelly =
-    edge != null && latestTrade
-      ? edge / (1 - latestTrade.marketProbability)
-      : null;
+  // Use backend's pre-computed Kelly fraction (correct binary Kelly criterion)
+  // instead of the incorrect formula `edge / (1 - marketP)` which has no
+  // theoretical basis for binary bets.
+  const kelly = latestTrade?.kellyFraction ?? null;
 
   return (
     <div>

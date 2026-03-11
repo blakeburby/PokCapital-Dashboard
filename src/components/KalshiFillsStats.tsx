@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useMemo } from "react";
-import { getFills, getTrades, getMarketPrice, deriveOutcome, derivePnlUSD, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
+import { getFills, getTrades, getMarketPrice, deriveOutcome, derivePnlUSD, KALSHI_FEE_NOTE, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
 import {
   Activity,
   TrendingUp,
@@ -116,11 +116,12 @@ function computeEnrichedStats(
 ) {
   const totalFills = enrichedFills.length;
 
-  // Derive outcome and PnL from Kalshi's authoritative result
-  const pnlCentsForFill = (f: EnrichedFill): number => {
+  // Returns gross PnL in cents for a settled fill, or null if not yet settled.
+  // Fix: previously returned 0 for unsettled trades which could silently corrupt aggregates.
+  const pnlCentsForFill = (f: EnrichedFill): number | null => {
     const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
-    return pnlUSD !== null ? pnlUSD * 100 : 0;
+    return pnlUSD !== null ? pnlUSD * 100 : null;
   };
 
   const settled = enrichedFills.filter((f) => {
@@ -132,7 +133,8 @@ function computeEnrichedStats(
   );
   const lossesCount = settled.length - wins.length;
 
-  const realizedPnlUSD = settled.reduce((s, f) => s + pnlCentsForFill(f), 0) / 100;
+  // Sum only non-null PnL values (settled fills guaranteed to return non-null)
+  const realizedPnlUSD = settled.reduce((s, f) => s + (pnlCentsForFill(f) ?? 0), 0) / 100;
 
   const winRate = settled.length > 0 ? wins.length / settled.length : null;
 
@@ -147,21 +149,26 @@ function computeEnrichedStats(
       ? matched.reduce((s, f) => s + f.paperTrade!.confidence, 0) / matched.length
       : null;
 
-  const grossWinsCents = wins.reduce((s, f) => s + pnlCentsForFill(f), 0);
+  // Profit factor: ratio of gross winning PnL to gross losing PnL (both in cents).
+  // Note: the ratio is unit-agnostic so cents vs dollars doesn't affect the result.
+  const grossWinsCents = wins.reduce((s, f) => s + (pnlCentsForFill(f) ?? 0), 0);
   const grossLossesCents = Math.abs(
     settled
       .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
-      .reduce((s, f) => s + pnlCentsForFill(f), 0)
+      .reduce((s, f) => s + (pnlCentsForFill(f) ?? 0), 0)
   );
   const profitFactor =
     grossLossesCents > 0 ? grossWinsCents / grossLossesCents : null;
 
-  const pnls = settled.map(pnlCentsForFill);
+  // Per-trade PnL array for distribution stats (settled fills only)
+  const pnls = settled.map((f) => pnlCentsForFill(f) ?? 0);
   const bestTradePnl = pnls.length ? Math.max(...pnls) : 0;
   const worstTradePnl = pnls.length ? Math.min(...pnls) : 0;
   const mean = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : 0;
-  const variance = pnls.length
-    ? pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / pnls.length
+  // Fix: use sample variance (N-1 / Bessel's correction) instead of population variance.
+  // Population variance understates true variance with small trade counts, inflating Sharpe.
+  const variance = pnls.length > 1
+    ? pnls.reduce((s, p) => s + (p - mean) ** 2, 0) / (pnls.length - 1)
     : 0;
   const sharpeApprox = variance > 0 ? mean / Math.sqrt(variance) : 0;
 
@@ -209,11 +216,20 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
   );
   const marketPrices = useMarketPrices(allTickers);
 
+  const enrichedAll = useMemo(
+    () => buildEnrichedFills(fills ?? [], trades ?? []),
+    [fills, trades]
+  );
+
+  const hiddenCount = useMemo(
+    () => enrichedAll.filter((f) => hiddenIds.has(f.trade_id)).length,
+    [enrichedAll, hiddenIds]
+  );
+
   const stats = useMemo(() => {
-    const enriched = buildEnrichedFills(fills ?? [], trades ?? []);
-    const visible = enriched.filter((f) => !hiddenIds.has(f.trade_id));
+    const visible = enrichedAll.filter((f) => !hiddenIds.has(f.trade_id));
     return computeEnrichedStats(visible, marketPrices);
-  }, [fills, trades, hiddenIds, marketPrices]);
+  }, [enrichedAll, hiddenIds, marketPrices]);
 
   // Staleness: warn when the newest fill's created_time is over 24h old
   const fillsStale = useMemo(() => {
@@ -294,9 +310,9 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
       color: winRateColor,
     },
     {
-      label: "Total PNL",
+      label: "Total PNL (Gross)",
       value: fmtUSD(pnlCents),
-      sub: `${stats.realizedPnlUSD >= 0 ? "+" : ""}${stats.realizedPnlUSD.toFixed(2)} USD`,
+      sub: "fees not included",
       color: pnlColor,
       icon: <TrendingUp size={12} />,
     },
@@ -365,10 +381,27 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
           Most recent fill is over 24h old — no recent trading activity detected
         </div>
       )}
+      {hiddenCount > 0 && (
+        <div
+          className="flex items-center gap-2 text-xs px-3 py-1.5 rounded mb-3"
+          style={{
+            backgroundColor: "rgba(139,92,246,0.08)",
+            border: "1px solid rgba(139,92,246,0.2)",
+            color: "#8B5CF6",
+          }}
+        >
+          <AlertTriangle size={11} />
+          {hiddenCount} hidden fill{hiddenCount !== 1 ? "s" : ""} excluded from stats below.
+          Unhide to see full account performance.
+        </div>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         {cards.map((c) => (
           <MetricCard key={c.label} {...c} />
         ))}
+      </div>
+      <div className="flex items-center gap-3 mt-2 text-[10px] font-mono text-muted opacity-60">
+        <span>{KALSHI_FEE_NOTE}</span>
       </div>
       <DataSourceFooter endpoint="/fills" recordCount={stats.totalFills} source="Kalshi Portfolio API" />
     </>

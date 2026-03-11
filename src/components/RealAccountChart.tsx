@@ -33,6 +33,12 @@ interface ChartPoint {
   label: string;
 }
 
+interface ChartResult {
+  points: ChartPoint[];
+  /** True when implied start balance was negative, indicating external account activity */
+  unreliableReconstruction: boolean;
+}
+
 // Same pattern as KalshiFillsStats — fetches live market data for all tickers
 function useMarketPrices(tickers: string[]): Map<string, KalshiMarketPrice> {
   const key = tickers.length ? `market-prices-chart:${[...tickers].sort().join(",")}` : null;
@@ -54,7 +60,7 @@ function buildChartData(
   trades: Trade[],
   balanceDollars: number,
   marketPrices: Map<string, KalshiMarketPrice>
-): ChartPoint[] {
+): ChartResult {
   const enriched = buildEnrichedFills(fills, trades);
 
   // Keep only settled fills — determined from live Kalshi market data, not backend pnlTotal
@@ -75,9 +81,10 @@ function buildChartData(
       return tsA - tsB;
     });
 
-  if (settled.length === 0) return [];
+  if (settled.length === 0) return { points: [], unreliableReconstruction: false };
 
-  // Reconstruct implied starting balance using the same PnL formula as KalshiFillsStats
+  // Reconstruct implied starting balance using the same PnL formula as KalshiFillsStats.
+  // WARNING: This assumes no deposits, withdrawals, or manual trades occurred.
   const totalRealizedCents = settled.reduce((s, f) => {
     const outcome = deriveOutcome(
       f.side,
@@ -87,7 +94,10 @@ function buildChartData(
     );
     return s + (derivePnlUSD(f.fillPrice, f.count, outcome) ?? 0) * 100;
   }, 0);
-  const impliedStartDollars = balanceDollars - totalRealizedCents / 100;
+  const rawImpliedStart = balanceDollars - totalRealizedCents / 100;
+  // Guard: if implied start is negative, deposits/withdrawals have occurred
+  const unreliableReconstruction = rawImpliedStart < 0;
+  const impliedStartDollars = Math.max(rawImpliedStart, 0);
 
   const points: ChartPoint[] = [];
   // Opening point just before first settlement
@@ -116,7 +126,7 @@ function buildChartData(
     });
   }
 
-  return points;
+  return { points, unreliableReconstruction };
 }
 
 function CustomTooltip({
@@ -161,10 +171,12 @@ export default function RealAccountChart() {
   );
   const marketPrices = useMarketPrices(allTickers);
 
-  const chartData = useMemo(() => {
-    if (!fills || !trades || !balance) return [];
+  const chartResult = useMemo(() => {
+    if (!fills || !trades || !balance) return { points: [], unreliableReconstruction: false };
     return buildChartData(fills, trades, balance.balanceDollars, marketPrices);
   }, [fills, trades, balance, marketPrices]);
+
+  const chartData = chartResult.points;
 
   if (chartData.length < 2) {
     return (
@@ -183,10 +195,23 @@ export default function RealAccountChart() {
   const pad = Math.max((maxVal - minVal) * 0.1, 2);
 
   return (
-    <div
-      className="panel"
-      style={{ border: "1px solid rgba(139,92,246,0.15)", padding: "16px 8px 8px" }}
-    >
+    <div>
+      {chartResult.unreliableReconstruction && (
+        <div
+          className="flex items-center gap-2 text-xs px-3 py-1.5 rounded mb-2"
+          style={{
+            backgroundColor: "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.2)",
+            color: "#F59E0B",
+          }}
+        >
+          ⚠ Chart reconstruction may be inaccurate — deposits, withdrawals, or missing fills detected
+        </div>
+      )}
+      <div
+        className="panel"
+        style={{ border: "1px solid rgba(139,92,246,0.15)", padding: "16px 8px 8px" }}
+      >
       <ResponsiveContainer width="100%" height={180}>
         <LineChart data={chartData} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
           <CartesianGrid
@@ -224,7 +249,12 @@ export default function RealAccountChart() {
             activeDot={{ r: 4, fill: V, stroke: "#0B0F1A", strokeWidth: 2 }}
           />
         </LineChart>
-      </ResponsiveContainer>
+    </ResponsiveContainer>
+    <div className="text-[10px] font-mono text-muted opacity-50 mt-1 px-2">
+      Assumes no deposits or withdrawals. Gross PnL only.
+    </div>
+    </div>
     </div>
   );
 }
+
