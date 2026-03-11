@@ -10,6 +10,7 @@ import {
   Target,
   Award,
   AlertCircle,
+  AlertTriangle,
   Zap,
 } from "lucide-react";
 import DataSourceFooter from "@/components/DataSourceFooter";
@@ -214,6 +215,16 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
     return computeEnrichedStats(visible, marketPrices);
   }, [fills, trades, hiddenIds, marketPrices]);
 
+  // Staleness: warn when the newest fill's created_time is over 24h old
+  const fillsStale = useMemo(() => {
+    if (!fills || fills.length === 0) return false;
+    const newest = fills.reduce((best, f) => {
+      const t = new Date(f.created_time).getTime();
+      return t > best ? t : best;
+    }, 0);
+    return newest > 0 && Date.now() - newest > 24 * 60 * 60 * 1000;
+  }, [fills]);
+
   if (isLoading) {
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
@@ -341,6 +352,19 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
 
   return (
     <>
+      {fillsStale && (
+        <div
+          className="flex items-center gap-2 text-xs px-3 py-1.5 rounded mb-3"
+          style={{
+            backgroundColor: "rgba(245,158,11,0.08)",
+            border: "1px solid rgba(245,158,11,0.2)",
+            color: "#F59E0B",
+          }}
+        >
+          <AlertTriangle size={11} />
+          Most recent fill is over 24h old — no recent trading activity detected
+        </div>
+      )}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         {cards.map((c) => (
           <MetricCard key={c.label} {...c} />

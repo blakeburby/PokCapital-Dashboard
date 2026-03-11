@@ -107,6 +107,57 @@ export interface BackendHealth {
   error?: string;
 }
 
+// ─── Logs ─────────────────────────────────────────────────────────────────────
+
+export interface LogsMeta {
+  count: number;
+  lastTimestamp: string | null;
+}
+
+export interface LogsResponse {
+  logs: string[];
+  meta: LogsMeta;
+}
+
+// ─── Backend Status (per-worker observability) ────────────────────────────────
+
+export interface WorkerSnapshot {
+  assetKey: string;
+  currentPrice: number | null;
+  marketTicker: string | null;
+  marketFloorStrike: number | null;
+  marketCloseTime: string | null;
+  enginePhase: string | null;
+  orderbookSpread: number;
+  lastTradeTimestamp: number;
+  pendingTickers: string[];
+}
+
+export interface BackendStatus {
+  timestamp: string;
+  workers: WorkerSnapshot[];
+  positionTracker: { active: number; max: number };
+  recentEvents: string[];
+  latencyMs: number | null;
+}
+
+// ─── Per-Endpoint Latency Tracking ───────────────────────────────────────────
+// Module-level map — lives in the browser's module scope, updated on each
+// successful fetch. Components can read the last measured latency per endpoint.
+
+const _endpointLatency = new Map<string, number>();
+
+export function getEndpointLatency(endpoint: string): number | null {
+  return _endpointLatency.get(endpoint) ?? null;
+}
+
+async function timedFetch(url: string, init?: RequestInit): Promise<Response> {
+  const start = Date.now();
+  const res = await fetch(url, init);
+  _endpointLatency.set(url, Date.now() - start);
+  return res;
+}
+
 // ─── API Fetch Helpers ────────────────────────────────────────────────────────
 
 /** Safely normalize a trade from backend, providing defaults for missing fields */
@@ -142,40 +193,56 @@ function normalizeTrade(raw: Record<string, unknown>): Trade {
 // Stats, trades, and logs go through Vercel API proxy routes to avoid CORS.
 // Browser calls /api/* (same origin), Vercel server calls Railway server-to-server.
 export async function getStats(): Promise<Stats> {
-  const res = await fetch("/api/stats", { cache: "no-store" });
+  const res = await timedFetch("/api/stats", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/stats returned ${res.status}`);
   return res.json();
 }
 
 export async function getTrades(): Promise<Trade[]> {
-  const res = await fetch("/api/trades", { cache: "no-store" });
+  const res = await timedFetch("/api/trades", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/trades returned ${res.status}`);
   const raw = await res.json();
   if (!Array.isArray(raw)) return [];
   return raw.map(normalizeTrade);
 }
 
-export async function getLogs(): Promise<string[]> {
+export async function getLogs(): Promise<LogsResponse> {
+  const empty: LogsResponse = { logs: [], meta: { count: 0, lastTimestamp: null } };
   try {
-    const res = await fetch("/api/logs", { cache: "no-store" });
-    if (!res.ok) return [];
+    const res = await timedFetch("/api/logs", { cache: "no-store" });
+    if (!res.ok) return empty;
     const data = await res.json();
-    if (data && Array.isArray(data.logs)) return data.logs as string[];
-    if (Array.isArray(data)) return data as string[];
-    return [];
+
+    // Standard format: { logs: string[], meta: { count, lastTimestamp } }
+    if (data?.logs && Array.isArray(data.logs)) {
+      return {
+        logs: data.logs as string[],
+        meta: {
+          count:         Number(data.meta?.count         ?? data.logs.length),
+          lastTimestamp: (data.meta?.lastTimestamp as string | null) ?? null,
+        },
+      };
+    }
+
+    // Legacy fallback: bare array
+    if (Array.isArray(data)) {
+      return { logs: data as string[], meta: { count: data.length, lastTimestamp: null } };
+    }
+
+    return empty;
   } catch {
-    return [];
+    return empty;
   }
 }
 
 export async function getBalance(): Promise<AccountBalance> {
-  const res = await fetch("/api/balance", { cache: "no-store" });
+  const res = await timedFetch("/api/balance", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/balance returned ${res.status}`);
   return res.json();
 }
 
 export async function getFills(): Promise<KalshiFill[]> {
-  const res = await fetch("/api/fills", { cache: "no-store" });
+  const res = await timedFetch("/api/fills", { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/fills returned ${res.status}`);
   return res.json();
 }
@@ -184,6 +251,16 @@ export async function getHealth(): Promise<BackendHealth> {
   const res = await fetch("/api/health", { cache: "no-store" });
   const data = await res.json();
   return data as BackendHealth;
+}
+
+export async function getStatus(): Promise<BackendStatus | null> {
+  try {
+    const res = await fetch("/api/status", { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as BackendStatus;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Market Price / Outcome Derivation ────────────────────────────────────────

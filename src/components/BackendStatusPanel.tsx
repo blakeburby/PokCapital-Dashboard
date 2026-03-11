@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { getHealth, type BackendHealth } from "@/lib/api";
+import { getHealth, getStatus, getEndpointLatency, type BackendHealth, type BackendStatus } from "@/lib/api";
 import {
     Activity,
     Wifi,
@@ -66,6 +66,12 @@ export default function BackendStatusPanel() {
         { refreshInterval: 10_000, revalidateOnFocus: false }
     );
 
+    const { data: status } = useSWR<BackendStatus | null>(
+        "backend-status",
+        getStatus,
+        { refreshInterval: 10_000, revalidateOnFocus: false }
+    );
+
     const connected = !!health && health.status === "ok" && !error;
     const statusColor = connected ? "#22C55E" : "#EF4444";
     const statusText = isLoading
@@ -84,7 +90,7 @@ export default function BackendStatusPanel() {
 
     const backendUrl =
         process.env.NEXT_PUBLIC_API_BASE?.replace("https://", "") ??
-        "pokcapitalweb-production.up.railway.app";
+        "(not configured)";
 
     return (
         <div
@@ -156,7 +162,7 @@ export default function BackendStatusPanel() {
             {/* Metric cards */}
             {connected && health && (
                 <div
-                    className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 px-4 py-3"
+                    className="grid grid-cols-2 sm:grid-cols-5 lg:grid-cols-10 gap-2 px-4 py-3"
                     style={{ backgroundColor: "rgba(15,23,42,0.3)" }}
                 >
                     <MiniCard
@@ -215,6 +221,73 @@ export default function BackendStatusPanel() {
                         color="#8B5CF6"
                         sub={`min entry ${health.engineConfig.minEntryPriceCents}c`}
                     />
+                    <MiniCard
+                        label="Positions"
+                        value={status?.positionTracker.active != null ? String(status.positionTracker.active) : "—"}
+                        icon={<Zap size={10} />}
+                        color="#06B6D4"
+                        sub={`of ${status?.positionTracker.max ?? 2} max`}
+                    />
+                    <MiniCard
+                        label="Trades API"
+                        value={getEndpointLatency("/api/trades") != null ? `${getEndpointLatency("/api/trades")}ms` : "—"}
+                        icon={<Activity size={10} />}
+                        color="#3B82F6"
+                        sub="/api/trades latency"
+                    />
+                </div>
+            )}
+
+            {/* Per-worker state */}
+            {connected && status?.workers && status.workers.length > 0 && (
+                <div
+                    className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 pb-3"
+                    style={{ backgroundColor: "rgba(15,23,42,0.2)" }}
+                >
+                    {status.workers.map((w) => (
+                        <div
+                            key={w.assetKey}
+                            className="rounded-lg px-3 py-2 flex flex-col gap-0.5"
+                            style={{ backgroundColor: "rgba(30,41,59,0.5)", border: "1px solid #1F2937" }}
+                        >
+                            <span className="text-[10px] uppercase tracking-wider text-muted font-medium">
+                                {w.assetKey.toUpperCase()} Worker
+                            </span>
+                            <span className="text-xs font-mono font-semibold text-text truncate">
+                                {w.currentPrice != null ? `$${w.currentPrice.toLocaleString()}` : "—"}
+                            </span>
+                            <span className="text-[10px] text-muted truncate">
+                                {w.marketTicker ?? "no market"}
+                            </span>
+                            <span className="text-[10px] font-mono truncate" style={{ color: "#06B6D4" }}>
+                                {w.enginePhase ?? "idle"}
+                            </span>
+                            {w.orderbookSpread > 0 && (
+                                <span className="text-[10px] text-muted">
+                                    spread: {w.orderbookSpread.toFixed(1)}¢
+                                </span>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {/* Recent engine events */}
+            {connected && status?.recentEvents && status.recentEvents.length > 0 && (
+                <div
+                    className="px-4 pb-3"
+                    style={{ backgroundColor: "rgba(15,23,42,0.2)" }}
+                >
+                    <p className="text-[10px] uppercase tracking-wider text-muted mb-1 pt-2">
+                        Recent Engine Events
+                    </p>
+                    <div className="space-y-0.5">
+                        {status.recentEvents.slice(-5).map((evt, i) => (
+                            <p key={i} className="text-[10px] font-mono text-muted truncate">
+                                {evt}
+                            </p>
+                        ))}
+                    </div>
                 </div>
             )}
 

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useMemo } from "react";
 import useSWR from "swr";
-import { getLogs } from "@/lib/api";
+import { getLogs, type LogsResponse } from "@/lib/api";
 import {
   Terminal,
   RefreshCw,
@@ -129,15 +129,18 @@ export default function LogsPanel() {
   const [showFilters, setShowFilters] = useState(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const { data: logs, error, isLoading, mutate } = useSWR<string[]>(
+  const { data: logsData, error, isLoading, mutate } = useSWR<LogsResponse>(
     ["logs", manualRefresh],
     () => getLogs(),
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
+  const logs = useMemo(() => logsData?.logs ?? [], [logsData]);
+  const logsMeta = logsData?.meta ?? { count: 0, lastTimestamp: null as string | null };
+
   // Parse all logs
   const parsedLogs = useMemo(
-    () => (logs ?? []).map(parseLine),
+    () => logs.map(parseLine),
     [logs]
   );
 
@@ -174,7 +177,7 @@ export default function LogsPanel() {
     });
   };
 
-  const noLogs = !logs || logs.length === 0;
+  const noLogs = logs.length === 0;
 
   // Status bar data
   const lastLog = parsedLogs.length > 0 ? parsedLogs[parsedLogs.length - 1] : null;
@@ -184,8 +187,8 @@ export default function LogsPanel() {
     l.eventType === "TRADE_BLOCKED" || l.eventType === "TRADE_SKIPPED"
   ).length;
 
-  // Freshness
-  const lastTimestamp = lastLog?.timestamp;
+  // Freshness — prefer meta.lastTimestamp from backend, fall back to parsed log timestamp
+  const lastTimestamp = logsMeta.lastTimestamp ?? lastLog?.timestamp ?? null;
   const freshnessText = lastTimestamp
     ? (() => {
       const ms = Date.now() - new Date(lastTimestamp).getTime();
@@ -414,7 +417,10 @@ export default function LogsPanel() {
           <div className="flex items-center gap-3">
             {!noLogs && (
               <span className="text-xs font-mono" style={{ color: "#374151" }}>
-                {filteredLogs.length}/{logs!.length} lines
+                {filteredLogs.length}/{logs.length} lines
+                {logsMeta.count > logs.length && (
+                  <span className="opacity-50 ml-1">({logsMeta.count} total on backend)</span>
+                )}
               </span>
             )}
           </div>

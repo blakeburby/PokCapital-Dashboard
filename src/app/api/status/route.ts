@@ -5,17 +5,17 @@ const RAILWAY = process.env.NEXT_PUBLIC_API_BASE ?? "";
 export async function GET() {
   if (!RAILWAY) {
     return NextResponse.json(
-      { status: "unreachable", error: "NEXT_PUBLIC_API_BASE not set", latencyMs: null },
+      { error: "NEXT_PUBLIC_API_BASE not set", latencyMs: null },
       { status: 500 }
     );
   }
   try {
     const start = Date.now();
-    const res = await fetch(`${RAILWAY}/health`, { cache: "no-store" });
+    const res = await fetch(`${RAILWAY}/status`, { cache: "no-store" });
     const latencyMs = Date.now() - start;
     if (!res.ok) {
       return NextResponse.json(
-        { status: "error", error: `Railway returned ${res.status}`, latencyMs },
+        { error: `Backend returned ${res.status}`, latencyMs },
         { status: res.status }
       );
     }
@@ -23,7 +23,7 @@ export async function GET() {
     return NextResponse.json({ ...data, latencyMs });
   } catch {
     return NextResponse.json(
-      { status: "unreachable", error: "Failed to reach backend", latencyMs: null },
+      { error: "Failed to reach backend", latencyMs: null },
       { status: 502 }
     );
   }

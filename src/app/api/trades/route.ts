@@ -1,24 +1,25 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-const RAILWAY =
-  process.env.NEXT_PUBLIC_API_BASE ||
-  "https://pokcapitalweb-production-82ec.up.railway.app";
+const RAILWAY = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!RAILWAY) {
+    return NextResponse.json({ error: "NEXT_PUBLIC_API_BASE not set" }, { status: 500 });
+  }
   try {
-    const res = await fetch(`${RAILWAY}/trades`, { cache: "no-store" });
+    const asset = new URL(req.url).searchParams.get("asset");
+    const url = asset
+      ? `${RAILWAY}/trades?asset=${encodeURIComponent(asset)}`
+      : `${RAILWAY}/trades`;
+    const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) {
       return NextResponse.json(
         { error: `Railway returned ${res.status}` },
         { status: res.status }
       );
     }
-    const data = await res.json();
-    return NextResponse.json(data);
-  } catch (err) {
-    return NextResponse.json(
-      { error: "Failed to reach backend" },
-      { status: 502 }
-    );
+    return NextResponse.json(await res.json());
+  } catch {
+    return NextResponse.json({ error: "Failed to reach backend" }, { status: 502 });
   }
 }
