@@ -403,6 +403,10 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     );
     return (fills ?? []).map((fill): EnrichedFill => {
       const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+      // Normalize to YES-price frame before computing slippage.
+      // fill.no_price (e.g. 93¢) vs pt.entryPrice in YES terms (e.g. 7¢) would give +86¢ — wrong.
+      // 100 - fill.no_price restores the implied YES price so both values are comparable.
+      const fillYesEq = fill.side === "yes" ? fill.yes_price : 100 - fill.no_price;
       const pt = byOrderId.get(fill.order_id) ?? null;
       const totalEV = pt !== null ? pt.ev * fill.count : null;
       return {
@@ -410,7 +414,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
         resolvedAsset: pt?.asset ?? tickerToAsset(fill.ticker),
         fillPrice,
         paperTrade: pt,
-        slippage: pt !== null ? fillPrice - pt.entryPrice : null,
+        slippage: pt !== null ? fillYesEq - pt.entryPrice : null,
         capitalUSD: (fillPrice * fill.count) / 100,
         totalEV,
       };

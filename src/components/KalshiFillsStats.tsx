@@ -99,13 +99,14 @@ export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): Enrich
   );
   return fills.map((fill): EnrichedFill => {
     const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+    const fillYesEq = fill.side === "yes" ? fill.yes_price : 100 - fill.no_price;
     const pt = byOrderId.get(fill.order_id) ?? null;
     return {
       ...fill,
       fillPrice,
       capitalUSD: (fillPrice * fill.count) / 100,
       paperTrade: pt,
-      slippage: pt !== null ? fillPrice - pt.entryPrice : null,
+      slippage: pt !== null ? fillYesEq - pt.entryPrice : null,
     };
   });
 }
