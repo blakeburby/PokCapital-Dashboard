@@ -402,8 +402,9 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
       </div>
       <div className="flex items-center gap-3 mt-2 text-[10px] font-mono text-muted opacity-60">
         <span>{KALSHI_FEE_NOTE}</span>
+        <span className="ml-auto">Fills served from persistent DB — history survives redeploys</span>
       </div>
-      <DataSourceFooter endpoint="/fills" recordCount={stats.totalFills} source="Kalshi Portfolio API" />
+      <DataSourceFooter endpoint="/fills" recordCount={stats.totalFills} source="Persistent DB → Kalshi Portfolio API" />
     </>
   );
 }

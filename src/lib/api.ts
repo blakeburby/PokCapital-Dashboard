@@ -141,6 +141,61 @@ export interface BackendStatus {
   latencyMs: number | null;
 }
 
+// ─── Analytics (from persistent DB via /analytics endpoint) ──────────────────
+
+export interface BreakdownRow {
+  fills: number;
+  settled: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  grossPnlCents: number;
+  avgFillPrice?: number;
+  capitalUSD?: number;
+  avgEvCents?: number | null;
+  avgModelProb?: number | null;
+  avgSlippageCents?: number | null;
+}
+
+export interface FillAnalytics {
+  summary: {
+    totalFills: number;
+    settledFills: number;
+    pendingFills: number;
+    winsCount: number;
+    lossesCount: number;
+    winRate: number | null;
+    grossPnlCents: number;
+    estimatedFeeCents: number;
+    netPnlCents: number;
+    avgFillPrice: number;
+    firstFillAt: string | null;
+    lastFillAt: string | null;
+    totalCapitalUSD: number;
+    avgEvCents: number | null;
+    avgConfidence: number | null;
+    avgSlippageCents: number | null;
+    matchedFills: number;
+    dataLastUpdated: string;
+    fillsFromDb: boolean;
+  };
+  byAsset: Record<string, BreakdownRow>;
+  byRegime: Record<string, BreakdownRow>;
+  bySide: Record<string, BreakdownRow>;
+  dailyPnl: Array<{
+    date: string;
+    fills: number;
+    settled: number;
+    wins: number;
+    losses: number;
+    grossPnlCents: number;
+  }>;
+  balanceHistory: Array<{
+    timestamp: string;
+    balanceCents: number;
+  }>;
+}
+
 // ─── Per-Endpoint Latency Tracking ───────────────────────────────────────────
 // Module-level map — lives in the browser's module scope, updated on each
 // successful fetch. Components can read the last measured latency per endpoint.
@@ -258,6 +313,20 @@ export async function getStatus(): Promise<BackendStatus | null> {
     const res = await fetch("/api/status", { cache: "no-store" });
     if (!res.ok) return null;
     return (await res.json()) as BackendStatus;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch analytics from the persistent DB via /analytics.
+ * Returns null on error — callers should show a "data unavailable" state.
+ */
+export async function getAnalytics(): Promise<FillAnalytics | null> {
+  try {
+    const res = await timedFetch("/api/analytics", { cache: "no-store" });
+    if (!res.ok) return null;
+    return (await res.json()) as FillAnalytics;
   } catch {
     return null;
   }

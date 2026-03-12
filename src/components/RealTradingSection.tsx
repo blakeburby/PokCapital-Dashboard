@@ -6,6 +6,7 @@ import { BookOpen } from "lucide-react";
 import KalshiFillsStats from "@/components/KalshiFillsStats";
 import KalshiFillsTable from "@/components/KalshiFillsTable";
 import RealAccountChart from "@/components/RealAccountChart";
+import AnalyticsSection from "@/components/AnalyticsSection";
 import { getBalance, type AccountBalance } from "@/lib/api";
 
 const V = "#8B5CF6"; // violet-500
@@ -110,6 +111,18 @@ export default function RealTradingSection() {
           </p>
           <KalshiFillsStats hiddenIds={hiddenIds} />
         </div>
+
+        {/* ── Persistent analytics from DB — the source of truth ── */}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(139,92,246,0.7)" }}
+          >
+            Strategy Analytics (Persistent DB)
+          </p>
+          <AnalyticsSection />
+        </div>
+
         <div>
           <p
             className="text-xs font-semibold uppercase tracking-widest mb-3"
