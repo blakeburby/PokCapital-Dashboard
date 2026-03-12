@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     const url = asset
       ? `${RAILWAY}/trades?asset=${encodeURIComponent(asset)}`
       : `${RAILWAY}/trades`;
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(10_000) });
     if (!res.ok) {
       return NextResponse.json(
         { error: `Railway returned ${res.status}` },

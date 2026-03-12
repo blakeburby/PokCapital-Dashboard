@@ -136,6 +136,10 @@ export interface WorkerSnapshot {
   orderbookSpread: number;
   lastTradeTimestamp: number;
   pendingTickers: string[];
+  noTradeReason: string | null;
+  currentEV: number | null;
+  stabilityCount: number | null;
+  cooldownRemainingMs: number;
 }
 
 export interface BackendStatus {

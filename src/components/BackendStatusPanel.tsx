@@ -225,7 +225,14 @@ export default function BackendStatusPanel() {
                         label="Positions"
                         value={status?.positionTracker.active != null ? String(status.positionTracker.active) : "—"}
                         icon={<Zap size={10} />}
-                        color="#06B6D4"
+                        color={
+                            status?.positionTracker.active != null &&
+                            status.positionTracker.active >= status.positionTracker.max
+                                ? "#EF4444"
+                                : status?.positionTracker.active != null && status.positionTracker.active > 0
+                                    ? "#F59E0B"
+                                    : "#06B6D4"
+                        }
                         sub={`of ${status?.positionTracker.max ?? 2} max`}
                     />
                     <MiniCard
@@ -244,31 +251,58 @@ export default function BackendStatusPanel() {
                     className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 pb-3"
                     style={{ backgroundColor: "rgba(15,23,42,0.2)" }}
                 >
-                    {status.workers.map((w) => (
-                        <div
-                            key={w.assetKey}
-                            className="rounded-lg px-3 py-2 flex flex-col gap-0.5"
-                            style={{ backgroundColor: "rgba(30,41,59,0.5)", border: "1px solid #1F2937" }}
-                        >
-                            <span className="text-[10px] uppercase tracking-wider text-muted font-medium">
-                                {w.assetKey.toUpperCase()} Worker
-                            </span>
-                            <span className="text-xs font-mono font-semibold text-text truncate">
-                                {w.currentPrice != null ? `$${w.currentPrice.toLocaleString()}` : "—"}
-                            </span>
-                            <span className="text-[10px] text-muted truncate">
-                                {w.marketTicker ?? "no market"}
-                            </span>
-                            <span className="text-[10px] font-mono truncate" style={{ color: "#06B6D4" }}>
-                                {w.enginePhase ?? "idle"}
-                            </span>
-                            {w.orderbookSpread > 0 && (
-                                <span className="text-[10px] text-muted">
-                                    spread: {w.orderbookSpread.toFixed(1)}¢
+                    {status.workers.map((w) => {
+                        const phaseColor =
+                            w.enginePhase === "committed_trade"
+                                ? "#22C55E"
+                                : w.enginePhase === "committed_no_trade"
+                                    ? "#F59E0B"
+                                    : "#06B6D4";
+                        const cooldownSecs = w.cooldownRemainingMs != null
+                            ? Math.ceil(w.cooldownRemainingMs / 1000)
+                            : 0;
+                        return (
+                            <div
+                                key={w.assetKey}
+                                className="rounded-lg px-3 py-2 flex flex-col gap-0.5"
+                                style={{ backgroundColor: "rgba(30,41,59,0.5)", border: "1px solid #1F2937" }}
+                            >
+                                <span className="text-[10px] uppercase tracking-wider text-muted font-medium">
+                                    {w.assetKey.toUpperCase()} Worker
                                 </span>
-                            )}
-                        </div>
-                    ))}
+                                <span className="text-xs font-mono font-semibold text-text truncate">
+                                    {w.currentPrice != null ? `$${w.currentPrice.toLocaleString()}` : "—"}
+                                </span>
+                                <span className="text-[10px] text-muted truncate">
+                                    {w.marketTicker ?? "no market"}
+                                </span>
+                                <span className="text-[10px] font-mono truncate" style={{ color: phaseColor }}>
+                                    {w.enginePhase ?? "idle"}
+                                    {w.currentEV != null && ` · ${w.currentEV.toFixed(1)}¢ EV`}
+                                    {w.stabilityCount != null && ` · ${w.stabilityCount}/10`}
+                                </span>
+                                {w.noTradeReason && (
+                                    <span
+                                        className="text-[10px] truncate"
+                                        style={{ color: "#9CA3AF" }}
+                                        title={w.noTradeReason}
+                                    >
+                                        {w.noTradeReason}
+                                    </span>
+                                )}
+                                {cooldownSecs > 0 && (
+                                    <span className="text-[10px]" style={{ color: "#F59E0B" }}>
+                                        cooldown: {cooldownSecs}s
+                                    </span>
+                                )}
+                                {w.orderbookSpread > 0 && (
+                                    <span className="text-[10px] text-muted">
+                                        spread: {w.orderbookSpread.toFixed(1)}¢
+                                    </span>
+                                )}
+                            </div>
+                        );
+                    })}
                 </div>
             )}
 
