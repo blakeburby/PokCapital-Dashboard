@@ -57,13 +57,18 @@ export interface KalshiFill {
   trade_id: string;
   order_id: string;
   ticker: string;
+  asset: string;                      // extracted from ticker by backend
   action: "buy" | "sell";
   side: "yes" | "no";
   count: number;
   yes_price: number;
   no_price: number;
   is_taker: boolean;
+  fee_cents: number | null;           // Kalshi fee if returned by API; null if unknown
   created_time: string;
+  outcome: "win" | "loss" | null;     // set by reconcileSettlement() in DB; null = pending
+  pnl_gross_cents: number | null;     // gross PnL in cents (before fees)
+  pnl_net_cents: number | null;       // net PnL after fees
 }
 
 // ─── Kalshi Market Price ──────────────────────────────────────────────────────
@@ -351,50 +356,47 @@ export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice 
 }
 
 /**
- * Derive trade outcome directly from Kalshi's authoritative market result.
- *
- * Priority order:
- *   1. Kalshi market `result` (authoritative — exchange has settled the market)
- *   2. Backend paper outcome (fallback when Kalshi data unavailable)
+ * Derive trade outcome with the following priority:
+ *   1. Stored outcome from DB fill or paper trade (already reconciled by backend)
+ *   2. Kalshi market `result` from public API (for very recent fills not yet in DB)
  *   3. Age-based heuristic (error if market should have settled by now)
  *
- * Returns "error" when the market should be settled but no outcome is available.
+ * Pass `fill.outcome ?? fill.paperTrade?.outcome` as storedOutcome.
  */
 export function deriveOutcome(
   side: "yes" | "no",
   createdTime: string,
   mp: KalshiMarketPrice | undefined,
-  paperOutcome?: "win" | "loss" | "pending"
+  storedOutcome?: "win" | "loss" | "pending" | null,
 ): "win" | "loss" | "pending" | "error" {
-  // 1. Kalshi market data is the single source of truth when available
-  if (mp && mp.status === "determined" && mp.result) {
+  // 1. DB-reconciled outcome is the most reliable — use it immediately
+  if (storedOutcome === "win" || storedOutcome === "loss") return storedOutcome;
+
+  // 2. Kalshi market result from public API (backup for very recent fills)
+  if (mp && (mp.result === "yes" || mp.result === "no")) {
     return side === mp.result ? "win" : "loss";
   }
 
-  // 2. Fall back to backend paper outcome only when Kalshi data is absent
-  if (!mp && (paperOutcome === "win" || paperOutcome === "loss")) {
-    return paperOutcome;
-  }
-
-  // 3. If no data and the market is old enough, flag as error
-  if (!mp) {
-    const ageMs = Date.now() - new Date(createdTime).getTime();
-    return ageMs > 20 * 60_000 ? "error" : "pending";
-  }
+  // 3. Age heuristic — market should have settled but no outcome available
+  const ageMs = Date.now() - new Date(createdTime).getTime();
+  if (ageMs > 20 * 60_000) return "error";
 
   return "pending";
 }
 
 /**
- * Calculate actual PnL in USD from fill price and Kalshi-derived outcome.
+ * Calculate actual PnL in USD from fill price and outcome.
+ * Uses pre-computed DB PnL when available (authoritative), falls back to formula.
  * Returns null for pending or error outcomes.
  */
 export function derivePnlUSD(
   fillPrice: number,
   count: number,
-  outcome: "win" | "loss" | "pending" | "error"
+  outcome: "win" | "loss" | "pending" | "error",
+  dbPnlCents?: number | null,
 ): number | null {
   if (outcome === "pending" || outcome === "error") return null;
+  if (dbPnlCents != null) return dbPnlCents / 100;
   return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
 }
 

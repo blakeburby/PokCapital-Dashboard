@@ -70,7 +70,7 @@ function buildChartData(
         f.side,
         f.created_time,
         marketPrices.get(f.ticker),
-        f.paperTrade?.outcome
+        f.outcome ?? f.paperTrade?.outcome
       );
       return outcome === "win" || outcome === "loss";
     })
@@ -90,9 +90,9 @@ function buildChartData(
       f.side,
       f.created_time,
       marketPrices.get(f.ticker),
-      f.paperTrade?.outcome
+      f.outcome ?? f.paperTrade?.outcome
     );
-    return s + (derivePnlUSD(f.fillPrice, f.count, outcome) ?? 0) * 100;
+    return s + (derivePnlUSD(f.fillPrice, f.count, outcome, f.pnl_gross_cents) ?? 0) * 100;
   }, 0);
   const rawImpliedStart = balanceDollars - totalRealizedCents / 100;
   // Guard: if implied start is negative, deposits/withdrawals have occurred
@@ -115,9 +115,9 @@ function buildChartData(
       f.side,
       f.created_time,
       marketPrices.get(f.ticker),
-      f.paperTrade?.outcome
+      f.outcome ?? f.paperTrade?.outcome
     );
-    running += derivePnlUSD(f.fillPrice, f.count, outcome) ?? 0;
+    running += derivePnlUSD(f.fillPrice, f.count, outcome, f.pnl_gross_cents) ?? 0;
     const ts = f.paperTrade?.settledAt ?? new Date(f.created_time).getTime();
     points.push({
       time: ts,

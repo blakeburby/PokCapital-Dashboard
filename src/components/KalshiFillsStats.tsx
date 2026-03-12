@@ -119,17 +119,17 @@ function computeEnrichedStats(
   // Returns gross PnL in cents for a settled fill, or null if not yet settled.
   // Fix: previously returned 0 for unsettled trades which could silently corrupt aggregates.
   const pnlCentsForFill = (f: EnrichedFill): number | null => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
-    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
+    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome, f.pnl_gross_cents);
     return pnlUSD !== null ? pnlUSD * 100 : null;
   };
 
   const settled = enrichedFills.filter((f) => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
     return outcome === "win" || outcome === "loss";
   });
   const wins = settled.filter((f) =>
-    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "win"
+    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome) === "win"
   );
   const lossesCount = settled.length - wins.length;
 
@@ -154,7 +154,7 @@ function computeEnrichedStats(
   const grossWinsCents = wins.reduce((s, f) => s + (pnlCentsForFill(f) ?? 0), 0);
   const grossLossesCents = Math.abs(
     settled
-      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
+      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome) === "loss")
       .reduce((s, f) => s + (pnlCentsForFill(f) ?? 0), 0)
   );
   const profitFactor =
