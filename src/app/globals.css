@@ -1,0 +1,88 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg:      #0A0B0D;
+  --panel:   #0F1117;
+  --panel2:  #141720;
+  --accent:  #00E5CC;
+  --profit:  #00E676;
+  --loss:    #FF3D57;
+  --open:    #FFB300;
+  --text:    #E2E8F0;
+  --muted:   #4B5563;
+  --border:  #1A1F2E;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+/* Panel utility */
+.panel {
+  background-color: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+
+/* Section label */
+.section-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.75rem;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Monospace data */
+.data-mono {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.8125rem;
+}
+
+/* Badge variants */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.badge-teal   { background: rgba(0,229,204,0.12);  color: #00E5CC; }
+.badge-green  { background: rgba(0,230,118,0.12);  color: #00E676; }
+.badge-red    { background: rgba(255,61,87,0.12);  color: #FF3D57; }
+.badge-amber  { background: rgba(255,179,0,0.12);  color: #FFB300; }
+.badge-gray   { background: rgba(75,85,99,0.15);   color: #6B7280; }
