@@ -310,6 +310,63 @@ export function derivePnlUSD(
   return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
 }
 
+// ─── Engine State (Modified Black-Scholes backend) ──────────────────────────
+
+export interface ContractSnapshot {
+  ticker: string;
+  strike: number;
+  minutesLeft: number;
+  pModel: number;
+  evYes: number;
+  evNo: number;
+  action: string;
+  reason: string;
+  askYes: number;
+  bidYes: number;
+}
+
+export interface AssetSnapshot {
+  asset: string;
+  spot: number;
+  sigma: number;
+  isWarmedUp: boolean;
+  candleCount: number;
+  contracts: ContractSnapshot[];
+}
+
+export interface EngineState {
+  timestamp: string;
+  assets: Record<string, AssetSnapshot>;
+  liveTradingEnabled: boolean;
+  kalshiConfigured: boolean;
+}
+
+export interface SignalLog {
+  timestamp: number;
+  asset: string;
+  S: number;
+  K: number;
+  T_min: number;
+  sigma_ann: number;
+  pModel: number;
+  evYes: number;
+  evNo: number;
+  action: "YES" | "NO" | "FLAT";
+  reason: string;
+}
+
+export async function getEngineState(): Promise<EngineState> {
+  const res = await timedFetch("/api/state", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/state returned ${res.status}`);
+  return res.json();
+}
+
+export async function getSignals(): Promise<SignalLog[]> {
+  const res = await timedFetch("/api/signals", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/signals returned ${res.status}`);
+  return res.json();
+}
+
 // ─── Price Feeds (public exchange APIs, called client-side) ───────────────────
 
 export interface ExchangePrice {
