@@ -1,16 +1,21 @@
+"use client";
+
 import React from "react";
+import useSWR from "swr";
 import { FlaskConical } from "lucide-react";
+import { getPaperBalance, type PaperBalance } from "@/lib/api";
+import PaperFillsStats from "@/components/PaperFillsStats";
+import PaperAccountChart from "@/components/PaperAccountChart";
+import PaperFillsTable from "@/components/PaperFillsTable";
 
-interface PaperTradingSectionProps {
-  labels: string[];
-  children: React.ReactNode;
-}
+const A = "#F59E0B";
 
-export default function PaperTradingSection({
-  labels,
-  children,
-}: PaperTradingSectionProps) {
-  const childArray = React.Children.toArray(children);
+export default function PaperTradingSection() {
+  const { data: balance } = useSWR<PaperBalance>(
+    "paper-balance",
+    getPaperBalance,
+    { refreshInterval: 5_000, revalidateOnFocus: false }
+  );
 
   return (
     <div>
@@ -44,11 +49,11 @@ export default function PaperTradingSection({
         }}
       >
         <div className="flex items-center gap-3">
-          <FlaskConical size={20} style={{ color: "#F59E0B" }} />
+          <FlaskConical size={20} style={{ color: A }} />
           <div>
             <h2
               className="text-lg font-semibold tracking-wider uppercase"
-              style={{ color: "#F59E0B" }}
+              style={{ color: A }}
             >
               Paper Trading
             </h2>
@@ -57,33 +62,59 @@ export default function PaperTradingSection({
             </p>
           </div>
         </div>
-        <span
-          className="font-mono text-xs px-2.5 py-1 rounded mt-0.5"
-          style={{
-            backgroundColor: "rgba(245,158,11,0.15)",
-            color: "#F59E0B",
-            border: "1px solid rgba(245,158,11,0.3)",
-          }}
-        >
-          SIM MODE
-        </span>
+        <div className="flex flex-col items-end gap-1">
+          <span
+            className="font-mono font-semibold tracking-tight"
+            style={{ fontSize: "1.5rem", color: A }}
+          >
+            {balance ? `$${balance.balanceDollars.toFixed(2)}` : "—"}
+          </span>
+          <span className="text-xs text-muted">
+            Paper Balance
+            {balance ? ` (started $${balance.startingBalanceDollars.toFixed(2)})` : ""}
+          </span>
+          <span
+            className="font-mono text-xs px-2.5 py-0.5 rounded"
+            style={{
+              backgroundColor: "rgba(245,158,11,0.15)",
+              color: A,
+              border: "1px solid rgba(245,158,11,0.3)",
+            }}
+          >
+            SIM MODE
+          </span>
+        </div>
       </div>
 
-      {/* Labeled children */}
+      {/* Sub-sections */}
       <div className="space-y-10">
-        {childArray.map((child, i) => (
-          <div key={i}>
-            {labels[i] && (
-              <p
-                className="text-xs font-semibold uppercase tracking-widest mb-3"
-                style={{ color: "rgba(245,158,11,0.7)" }}
-              >
-                {labels[i]}
-              </p>
-            )}
-            {child}
-          </div>
-        ))}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(245,158,11,0.7)" }}
+          >
+            Paper Account Overview
+          </p>
+          <PaperFillsStats />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(245,158,11,0.7)" }}
+          >
+            Paper Equity Curve
+          </p>
+          <PaperAccountChart />
+        </div>
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(245,158,11,0.7)" }}
+          >
+            Paper Fill History
+          </p>
+          <PaperFillsTable />
+        </div>
       </div>
     </div>
   );

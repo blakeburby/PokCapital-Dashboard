@@ -18,6 +18,8 @@ import {
   derivePnlUSD,
   getMarketPrice,
 } from "@/lib/api";
+import RealTradingSection from "@/components/RealTradingSection";
+import PaperTradingSection from "@/components/PaperTradingSection";
 import { useState, useEffect, useMemo } from "react";
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
@@ -512,6 +514,12 @@ export default function Dashboard() {
           Real Kalshi Fills
         </div>
         <FillsTable fills={fills ?? []} />
+
+        {/* Real Trades (Kalshi account) */}
+        <RealTradingSection />
+
+        {/* Paper Trading (simulated) */}
+        <PaperTradingSection />
       </div>
 
       {/* Footer */}

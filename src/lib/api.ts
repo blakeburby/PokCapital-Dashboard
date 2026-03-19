@@ -310,6 +310,35 @@ export function derivePnlUSD(
   return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
 }
 
+// ─── Paper Trading (paper-only trades, simulated balance) ───────────────────
+
+export interface PaperBalance {
+  balanceCents: number;
+  balanceDollars: number;
+  startingBalanceCents: number;
+  startingBalanceDollars: number;
+}
+
+export async function getPaperTrades(): Promise<Trade[]> {
+  const res = await timedFetch("/api/paper-trades", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/paper-trades returned ${res.status}`);
+  const raw = await res.json();
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeTrade);
+}
+
+export async function getPaperBalance(): Promise<PaperBalance> {
+  const res = await timedFetch("/api/paper-balance", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/paper-balance returned ${res.status}`);
+  return res.json();
+}
+
+export async function getPaperStats(): Promise<Stats> {
+  const res = await timedFetch("/api/paper-stats", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/paper-stats returned ${res.status}`);
+  return res.json();
+}
+
 // ─── Engine State (Modified Black-Scholes backend) ──────────────────────────
 
 export interface ContractSnapshot {
