@@ -98,7 +98,7 @@ export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): Enrich
       .map((t) => [t.orderId, t])
   );
   return fills.map((fill): EnrichedFill => {
-    const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+    const fillPrice = fill.fill_price || (fill.side === "yes" ? fill.yes_price : fill.no_price);
     const pt = byOrderId.get(fill.order_id) ?? null;
     return {
       ...fill,
@@ -118,17 +118,19 @@ function computeEnrichedStats(
 
   // Derive outcome and PnL from Kalshi's authoritative result
   const pnlCentsForFill = (f: EnrichedFill): number => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    // Prefer backend-stored PnL
+    if (f.pnl_gross_cents != null) return f.pnl_gross_cents;
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
     const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
     return pnlUSD !== null ? pnlUSD * 100 : 0;
   };
 
   const settled = enrichedFills.filter((f) => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
     return outcome === "win" || outcome === "loss";
   });
   const wins = settled.filter((f) =>
-    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "win"
+    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome) === "win"
   );
   const lossesCount = settled.length - wins.length;
 
@@ -150,7 +152,7 @@ function computeEnrichedStats(
   const grossWinsCents = wins.reduce((s, f) => s + pnlCentsForFill(f), 0);
   const grossLossesCents = Math.abs(
     settled
-      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
+      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome) === "loss")
       .reduce((s, f) => s + pnlCentsForFill(f), 0)
   );
   const profitFactor =

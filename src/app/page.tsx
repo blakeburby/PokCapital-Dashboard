@@ -14,13 +14,10 @@ import {
   getBalance,
   getFills,
   getSignals,
-  deriveOutcome,
-  derivePnlUSD,
-  getMarketPrice,
 } from "@/lib/api";
 import RealTradingSection from "@/components/RealTradingSection";
 import PaperTradingSection from "@/components/PaperTradingSection";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 
 // ─── Colors ──────────────────────────────────────────────────────────────────
 
@@ -193,29 +190,6 @@ function AssetModelCard({ snap }: { snap: AssetSnapshot }) {
 // ─── Fills Table with Kalshi-derived outcomes ────────────────────────────────
 
 function FillsTable({ fills }: { fills: KalshiFill[] }) {
-  // Resolve market outcomes for fills
-  const [outcomes, setOutcomes] = useState<Record<string, { outcome: "win" | "loss" | "pending" | "error"; pnl: number | null }>>({});
-
-  useEffect(() => {
-    if (fills.length === 0) return;
-    const tickers = [...new Set(fills.map((f) => f.ticker))];
-    Promise.all(
-      tickers.map(async (t) => {
-        const mp = await getMarketPrice(t).catch(() => null);
-        return { ticker: t, mp };
-      })
-    ).then((results) => {
-      const map: typeof outcomes = {};
-      for (const f of fills) {
-        const mp = results.find((r) => r.ticker === f.ticker)?.mp ?? undefined;
-        const outcome = deriveOutcome(f.side, f.created_time, mp);
-        const pnl = derivePnlUSD(f.yes_price, f.count, outcome);
-        map[f.trade_id] = { outcome, pnl };
-      }
-      setOutcomes(map);
-    });
-  }, [fills]);
-
   if (fills.length === 0) {
     return (
       <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 24, textAlign: "center" }}>
@@ -224,7 +198,8 @@ function FillsTable({ fills }: { fills: KalshiFill[] }) {
     );
   }
 
-  const totalPnl = Object.values(outcomes).reduce((sum, o) => sum + (o.pnl ?? 0), 0);
+  const totalPnlCents = fills.reduce((sum, f) => sum + (f.pnl_gross_cents ?? 0), 0);
+  const totalPnl = totalPnlCents / 100;
 
   return (
     <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 16, overflowX: "auto" }}>
@@ -250,7 +225,8 @@ function FillsTable({ fills }: { fills: KalshiFill[] }) {
         </thead>
         <tbody>
           {fills.slice().reverse().map((f) => {
-            const o = outcomes[f.trade_id];
+            const outcome = f.outcome ?? "pending";
+            const pnl = f.pnl_gross_cents != null ? f.pnl_gross_cents / 100 : null;
             return (
               <tr key={f.trade_id} style={{ borderBottom: `1px solid ${BORDER}15`, color: "#E2E8F0" }}>
                 <td style={{ padding: "4px 6px" }}>{new Date(f.created_time).toLocaleTimeString()}</td>
@@ -259,16 +235,14 @@ function FillsTable({ fills }: { fills: KalshiFill[] }) {
                   <span style={{ color: f.side === "yes" ? TEAL : RED }}>{f.side.toUpperCase()}</span>
                 </td>
                 <td style={{ padding: "4px 6px" }}>{f.count}</td>
-                <td style={{ padding: "4px 6px" }}>{f.yes_price}¢</td>
+                <td style={{ padding: "4px 6px" }}>{f.fill_price}¢</td>
                 <td style={{ padding: "4px 6px" }}>
-                  {o ? (
-                    <span style={{ color: o.outcome === "win" ? TEAL : o.outcome === "loss" ? RED : YELLOW }}>
-                      {o.outcome.toUpperCase()}
-                    </span>
-                  ) : "—"}
+                  <span style={{ color: outcome === "win" ? TEAL : outcome === "loss" ? RED : YELLOW }}>
+                    {outcome.toUpperCase()}
+                  </span>
                 </td>
-                <td style={{ padding: "4px 6px", color: (o?.pnl ?? 0) >= 0 ? TEAL : RED }}>
-                  {o?.pnl != null ? usd(o.pnl) : "—"}
+                <td style={{ padding: "4px 6px", color: (pnl ?? 0) >= 0 ? TEAL : RED }}>
+                  {pnl != null ? usd(pnl) : "—"}
                 </td>
               </tr>
             );
@@ -327,6 +301,77 @@ function SignalLogTable({ signals }: { signals: SignalLog[] }) {
             ))}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+// ─── Trading Tabs ────────────────────────────────────────────────────────
+
+function TradingTabs({ fills }: { fills: KalshiFill[] }) {
+  const [tab, setTab] = useState<"live" | "paper">("live");
+
+  const VIOLET = "#8B5CF6";
+  const AMBER = "#F59E0B";
+  const activeColor = tab === "live" ? VIOLET : AMBER;
+
+  return (
+    <div>
+      {/* Tab buttons */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 20 }}>
+        <button
+          onClick={() => setTab("live")}
+          style={{
+            flex: 1,
+            fontFamily: mono,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            padding: "12px 0",
+            cursor: "pointer",
+            border: "none",
+            borderBottom: tab === "live" ? `2px solid ${VIOLET}` : `1px solid ${BORDER}`,
+            background: tab === "live" ? `${VIOLET}10` : "transparent",
+            color: tab === "live" ? VIOLET : GRAY,
+            transition: "all 0.15s",
+          }}
+        >
+          Live Trading
+        </button>
+        <button
+          onClick={() => setTab("paper")}
+          style={{
+            flex: 1,
+            fontFamily: mono,
+            fontSize: 11,
+            fontWeight: 700,
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            padding: "12px 0",
+            cursor: "pointer",
+            border: "none",
+            borderBottom: tab === "paper" ? `2px solid ${AMBER}` : `1px solid ${BORDER}`,
+            background: tab === "paper" ? `${AMBER}10` : "transparent",
+            color: tab === "paper" ? AMBER : GRAY,
+            transition: "all 0.15s",
+          }}
+        >
+          Paper Trading
+        </button>
+      </div>
+
+      {/* Tab content */}
+      {tab === "live" ? (
+        <div>
+          <div style={{ fontSize: 9, fontFamily: mono, color: GRAY, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>
+            Real Kalshi Fills
+          </div>
+          <FillsTable fills={fills} />
+          <RealTradingSection />
+        </div>
+      ) : (
+        <PaperTradingSection />
       )}
     </div>
   );
@@ -509,17 +554,8 @@ export default function Dashboard() {
           <SignalLogTable signals={signals ?? []} />
         </div>
 
-        {/* Fills table */}
-        <div style={{ fontSize: 9, fontFamily: mono, color: GRAY, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>
-          Real Kalshi Fills
-        </div>
-        <FillsTable fills={fills ?? []} />
-
-        {/* Real Trades (Kalshi account) */}
-        <RealTradingSection />
-
-        {/* Paper Trading (simulated) */}
-        <PaperTradingSection />
+        {/* ── Trading Mode Tabs ──────────────────────────────── */}
+        <TradingTabs fills={fills ?? []} />
       </div>
 
       {/* Footer */}

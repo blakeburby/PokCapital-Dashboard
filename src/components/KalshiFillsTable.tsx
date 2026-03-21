@@ -386,7 +386,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
         .map((t) => [t.orderId, t])
     );
     return (fills ?? []).map((fill): EnrichedFill => {
-      const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+      const fillPrice = fill.fill_price || (fill.side === "yes" ? fill.yes_price : fill.no_price);
       const pt = byOrderId.get(fill.order_id) ?? null;
       const totalEV = pt !== null ? pt.ev * fill.count : null;
       return {
@@ -419,7 +419,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
       if (new Date(f.created_time).getTime() < cutoff) return false;
       // Status filter — use Kalshi-derived outcome, not paper store
       if (statusFilter !== "all") {
-        const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+        const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
         if (outcome !== statusFilter) return false;
       }
       // Asset search
@@ -446,7 +446,7 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     header: "Status",
     cell: ({ row }) => {
       const f = row.original;
-      return <OutcomeBadge outcome={deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome)} />;
+      return <OutcomeBadge outcome={deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome)} />;
     },
   };
 
@@ -455,8 +455,9 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     header: "Outcome PNL",
     cell: ({ row }) => {
       const f = row.original;
-      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
-      const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
+      // Prefer backend-stored PnL, fall back to client derivation
+      const pnlUSD = f.pnl_gross_cents != null ? f.pnl_gross_cents / 100 : derivePnlUSD(f.fillPrice, f.count, outcome);
       if (pnlUSD !== null) {
         return (
           <span className={`font-mono text-sm font-semibold ${pnlUSD >= 0 ? "text-profit" : "text-loss"}`}>
@@ -477,8 +478,9 @@ export default function KalshiFillsTable({ hiddenIds, setHiddenIds }: Props) {
     header: "ROI",
     cell: ({ row }) => {
       const f = row.original;
-      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
-      const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+      const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.outcome ?? f.paperTrade?.outcome);
+      // Prefer backend-stored PnL, fall back to client derivation
+      const pnlUSD = f.pnl_gross_cents != null ? f.pnl_gross_cents / 100 : derivePnlUSD(f.fillPrice, f.count, outcome);
       if (pnlUSD === null || f.capitalUSD === 0) return <span className="text-muted">—</span>;
       const roi = (pnlUSD / f.capitalUSD) * 100;
       return (

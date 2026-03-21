@@ -57,13 +57,18 @@ export interface KalshiFill {
   trade_id: string;
   order_id: string;
   ticker: string;
+  asset: string;
   action: "buy" | "sell";
   side: "yes" | "no";
   count: number;
   yes_price: number;
   no_price: number;
+  fill_price: number;
   is_taker: boolean;
   created_time: string;
+  outcome: "win" | "loss" | null;
+  pnl_gross_cents: number | null;
+  pnl_net_cents: number | null;
 }
 
 // ─── Kalshi Market Price ──────────────────────────────────────────────────────
