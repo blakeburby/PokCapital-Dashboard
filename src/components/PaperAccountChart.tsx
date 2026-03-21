@@ -18,6 +18,7 @@ import { getPaperTrades, getPaperBalance, type Trade, type PaperBalance } from "
 const A = "#F59E0B"; // amber-500
 const RED = "#EF4444";
 const GRAY = "#6B7280";
+const CARD = "#111318";
 
 interface ChartPoint {
   time: number;
@@ -218,17 +219,27 @@ export default function PaperAccountChart() {
             strokeOpacity={0.5}
           />
 
-          {/* Drawdown shading: area from peak down to equity value */}
+          {/* Drawdown shading: render peak area behind equity line;
+              the gap between peak and value shows as red fill */}
           {hasDrawdown && (
-            <Area
-              type="monotone"
-              dataKey="drawdownBase"
-              stroke="none"
-              fill={RED}
-              fillOpacity={0.08}
-              baseLine={chartData.map((d) => d.value)}
-              isAnimationActive={false}
-            />
+            <>
+              <Area
+                type="monotone"
+                dataKey="drawdownBase"
+                stroke="none"
+                fill={RED}
+                fillOpacity={0.1}
+                isAnimationActive={false}
+              />
+              <Area
+                type="monotone"
+                dataKey="value"
+                stroke="none"
+                fill={CARD}
+                fillOpacity={1}
+                isAnimationActive={false}
+              />
+            </>
           )}
 
           {/* Equity line */}
