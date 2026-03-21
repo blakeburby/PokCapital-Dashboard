@@ -5,7 +5,10 @@ import useSWR from "swr";
 import { FlaskConical } from "lucide-react";
 import { getPaperBalance, type PaperBalance } from "@/lib/api";
 import PaperFillsStats from "@/components/PaperFillsStats";
+import PaperAssetBreakdown from "@/components/PaperAssetBreakdown";
 import PaperAccountChart from "@/components/PaperAccountChart";
+import PaperCalibrationChart from "@/components/PaperCalibrationChart";
+import PaperEVAnalysis from "@/components/PaperEVAnalysis";
 import PaperFillsTable from "@/components/PaperFillsTable";
 
 const A = "#F59E0B";
@@ -88,6 +91,7 @@ export default function PaperTradingSection() {
 
       {/* Sub-sections */}
       <div className="space-y-10">
+        {/* 1. Stats Cards (with drawdown metrics) */}
         <div>
           <p
             className="text-xs font-semibold uppercase tracking-widest mb-3"
@@ -97,6 +101,19 @@ export default function PaperTradingSection() {
           </p>
           <PaperFillsStats />
         </div>
+
+        {/* 2. Per-Asset Breakdown */}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(245,158,11,0.7)" }}
+          >
+            Performance by Asset
+          </p>
+          <PaperAssetBreakdown />
+        </div>
+
+        {/* 3. Equity Curve with Drawdowns */}
         <div>
           <p
             className="text-xs font-semibold uppercase tracking-widest mb-3"
@@ -106,6 +123,22 @@ export default function PaperTradingSection() {
           </p>
           <PaperAccountChart />
         </div>
+
+        {/* 4. Model Validation (side by side) */}
+        <div>
+          <p
+            className="text-xs font-semibold uppercase tracking-widest mb-3"
+            style={{ color: "rgba(245,158,11,0.7)" }}
+          >
+            Model Validation
+          </p>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 12 }}>
+            <PaperCalibrationChart />
+            <PaperEVAnalysis />
+          </div>
+        </div>
+
+        {/* 5. Trade History Table */}
         <div>
           <p
             className="text-xs font-semibold uppercase tracking-widest mb-3"

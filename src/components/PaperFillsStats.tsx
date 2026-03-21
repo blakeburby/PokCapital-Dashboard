@@ -1,7 +1,8 @@
 "use client";
 
 import useSWR from "swr";
-import { getPaperStats, type Stats } from "@/lib/api";
+import { useMemo } from "react";
+import { getPaperStats, getPaperTrades, type Stats, type Trade } from "@/lib/api";
 import {
   Activity,
   TrendingUp,
@@ -10,6 +11,8 @@ import {
   Award,
   AlertCircle,
   Zap,
+  ArrowDownRight,
+  Shield,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -62,6 +65,60 @@ function MetricCard({ label, value, sub, color = "amber", icon }: CardProps) {
   );
 }
 
+// ─── Drawdown computation ────────────────────────────────────────────────────
+
+interface DrawdownMetrics {
+  maxDrawdownCents: number;
+  maxDrawdownPct: number;
+  currentDrawdownCents: number;
+  maxLossStreak: number;
+  recoveryFactor: number | null;
+}
+
+function computeDrawdown(trades: Trade[]): DrawdownMetrics {
+  const settled = trades
+    .filter((t) => t.outcome !== "pending" && t.pnlTotal != null && t.settledAt != null)
+    .sort((a, b) => a.settledAt! - b.settledAt!);
+
+  if (settled.length === 0) {
+    return { maxDrawdownCents: 0, maxDrawdownPct: 0, currentDrawdownCents: 0, maxLossStreak: 0, recoveryFactor: null };
+  }
+
+  let cumPnl = 0;
+  let peak = 0;
+  let maxDD = 0;
+  let maxDDPct = 0;
+  let streak = 0;
+  let maxStreak = 0;
+
+  for (const t of settled) {
+    cumPnl += t.pnlTotal ?? 0;
+    if (cumPnl > peak) peak = cumPnl;
+    const dd = peak - cumPnl;
+    if (dd > maxDD) {
+      maxDD = dd;
+      maxDDPct = peak > 0 ? dd / peak : 0;
+    }
+    if (t.outcome === "loss") {
+      streak++;
+      if (streak > maxStreak) maxStreak = streak;
+    } else {
+      streak = 0;
+    }
+  }
+
+  const currentDD = peak - cumPnl;
+  const recoveryFactor = maxDD > 0 && cumPnl > 0 ? cumPnl / maxDD : null;
+
+  return {
+    maxDrawdownCents: maxDD,
+    maxDrawdownPct: maxDDPct,
+    currentDrawdownCents: currentDD,
+    maxLossStreak: maxStreak,
+    recoveryFactor,
+  };
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function PaperFillsStats() {
@@ -71,10 +128,18 @@ export default function PaperFillsStats() {
     { refreshInterval: 5000, revalidateOnFocus: false }
   );
 
+  const { data: trades } = useSWR<Trade[]>(
+    "paper-trades-stats",
+    getPaperTrades,
+    { refreshInterval: 5000, revalidateOnFocus: false }
+  );
+
+  const dd = useMemo(() => computeDrawdown(trades ?? []), [trades]);
+
   if (isLoading) {
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        {Array.from({ length: 12 }).map((_, i) => (
+        {Array.from({ length: 16 }).map((_, i) => (
           <div key={i} className="panel animate-pulse h-20 bg-panel" />
         ))}
       </div>
@@ -196,6 +261,34 @@ export default function PaperFillsStats() {
       value: String(pendingCount),
       sub: "awaiting settlement",
       color: "neutral",
+    },
+    // ── Drawdown / Risk metrics ──
+    {
+      label: "Max Drawdown",
+      value: dd.maxDrawdownCents > 0 ? `-$${(dd.maxDrawdownCents / 100).toFixed(2)}` : "—",
+      sub: dd.maxDrawdownPct > 0 ? `${(dd.maxDrawdownPct * 100).toFixed(1)}% from peak` : "no drawdown",
+      color: dd.maxDrawdownCents > 0 ? "loss" : "neutral",
+      icon: <ArrowDownRight size={12} />,
+    },
+    {
+      label: "Current Drawdown",
+      value: dd.currentDrawdownCents > 0 ? `-$${(dd.currentDrawdownCents / 100).toFixed(2)}` : "$0.00",
+      sub: dd.currentDrawdownCents > 0 ? "below peak equity" : "at peak",
+      color: dd.currentDrawdownCents > 0 ? "loss" : "profit",
+      icon: <ArrowDownRight size={12} />,
+    },
+    {
+      label: "Max Loss Streak",
+      value: dd.maxLossStreak > 0 ? String(dd.maxLossStreak) : "—",
+      sub: "consecutive losses",
+      color: dd.maxLossStreak >= 5 ? "loss" : dd.maxLossStreak >= 3 ? "neutral" : "amber",
+    },
+    {
+      label: "Recovery Factor",
+      value: dd.recoveryFactor != null ? dd.recoveryFactor.toFixed(2) : "—",
+      sub: "PNL / max drawdown",
+      color: dd.recoveryFactor != null && dd.recoveryFactor >= 2 ? "profit" : dd.recoveryFactor != null && dd.recoveryFactor >= 1 ? "neutral" : "amber",
+      icon: <Shield size={12} />,
     },
   ];
 
