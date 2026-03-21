@@ -186,62 +186,135 @@ function AssetModelCard({ snap }: { snap: AssetSnapshot }) {
   );
 }
 
-// ─── Fills Table with Kalshi-derived outcomes ────────────────────────────────
+// ─── Live Fills Stats Cards ──────────────────────────────────────────────────
 
-function FillsTable({ fills }: { fills: KalshiFill[] }) {
+function LiveFillsStats({ fills }: { fills: KalshiFill[] }) {
+  const settled = fills.filter((f) => f.outcome != null);
+  const wins = settled.filter((f) => f.outcome === "win");
+  const losses = settled.filter((f) => f.outcome === "loss");
+  const pending = fills.filter((f) => f.outcome == null);
+  const totalPnlCents = settled.reduce((s, f) => s + (f.pnl_gross_cents ?? 0), 0);
+  const winPnl = wins.reduce((s, f) => s + (f.pnl_gross_cents ?? 0), 0);
+  const lossPnl = Math.abs(losses.reduce((s, f) => s + (f.pnl_gross_cents ?? 0), 0));
+  const winRate = settled.length > 0 ? wins.length / settled.length : null;
+  const profitFactor = lossPnl > 0 ? winPnl / lossPnl : winPnl > 0 ? Infinity : null;
+  const capitalCents = fills.reduce((s, f) => s + f.fill_price * f.count, 0);
+
+  const stats = [
+    { label: "FILLS", value: String(fills.length), sub: `${pending.length} pending`, color: "#E2E8F0" },
+    { label: "W / L", value: `${wins.length} / ${losses.length}`, sub: `${settled.length} settled`, color: "#E2E8F0" },
+    { label: "WIN RATE", value: winRate != null ? `${(winRate * 100).toFixed(1)}%` : "—", color: winRate != null ? (winRate >= 0.5 ? TEAL : RED) : "#E2E8F0" },
+    { label: "P&L", value: totalPnlCents >= 0 ? `+${usd(totalPnlCents / 100)}` : `-${usd(Math.abs(totalPnlCents / 100))}`, color: totalPnlCents >= 0 ? TEAL : RED },
+    { label: "PROFIT FACTOR", value: profitFactor != null ? (profitFactor === Infinity ? "∞" : profitFactor.toFixed(2)) : "—", color: profitFactor != null && profitFactor >= 1 ? TEAL : profitFactor != null ? RED : "#E2E8F0" },
+    { label: "CAPITAL", value: usd(capitalCents / 100), sub: "deployed", color: "#E2E8F0" },
+  ];
+
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8, marginBottom: 16 }}>
+      {stats.map((s) => (
+        <div key={s.label} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: "12px 14px" }}>
+          <div style={{ fontSize: 9, fontFamily: mono, color: GRAY, letterSpacing: "0.1em", marginBottom: 4 }}>{s.label}</div>
+          <div style={{ fontFamily: mono, fontSize: 16, fontWeight: 700, color: s.color }}>{s.value}</div>
+          {s.sub && <div style={{ fontSize: 9, fontFamily: mono, color: GRAY, marginTop: 2 }}>{s.sub}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Live Fills Table ────────────────────────────────────────────────────────
+
+function LiveFillsTable({ fills }: { fills: KalshiFill[] }) {
   if (fills.length === 0) {
     return (
-      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 24, textAlign: "center" }}>
-        <div style={{ fontFamily: mono, fontSize: 11, color: GRAY }}>No fills yet</div>
+      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 32, textAlign: "center" }}>
+        <div style={{ fontFamily: mono, fontSize: 12, color: GRAY, marginBottom: 4 }}>No fills yet</div>
+        <div style={{ fontFamily: mono, fontSize: 10, color: DIM }}>Live Kalshi fills will appear here once trades are placed</div>
       </div>
     );
   }
 
-  const totalPnlCents = fills.reduce((sum, f) => sum + (f.pnl_gross_cents ?? 0), 0);
-  const totalPnl = totalPnlCents / 100;
+  const thStyle: React.CSSProperties = { padding: "6px 10px", fontWeight: 600, fontSize: 9, letterSpacing: "0.08em", whiteSpace: "nowrap" };
+  const tdStyle: React.CSSProperties = { padding: "8px 10px", whiteSpace: "nowrap" };
 
   return (
-    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, padding: 16, overflowX: "auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <span style={{ fontFamily: mono, fontSize: 11, color: GRAY, letterSpacing: "0.1em" }}>
-          KALSHI FILLS ({fills.length})
-        </span>
-        <span style={{ fontFamily: mono, fontSize: 11, color: totalPnl >= 0 ? TEAL : RED }}>
-          P&L: {usd(totalPnl)}
-        </span>
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: mono, fontSize: 10 }}>
+    <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontFamily: mono, fontSize: 11 }}>
         <thead>
           <tr style={{ color: GRAY, textAlign: "left", borderBottom: `1px solid ${BORDER}` }}>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>TIME</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>TICKER</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>SIDE</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>QTY</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>PRICE</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>RESULT</th>
-            <th style={{ padding: "4px 6px", fontWeight: 500 }}>P&L</th>
+            <th style={thStyle}>DATE</th>
+            <th style={thStyle}>ASSET</th>
+            <th style={thStyle}>SIDE</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>QTY</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>PRICE</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>COST</th>
+            <th style={thStyle}>RESULT</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>P&L</th>
           </tr>
         </thead>
         <tbody>
-          {fills.slice().reverse().map((f) => {
+          {fills.slice().reverse().map((f, i) => {
             const outcome = f.outcome ?? "pending";
             const pnl = f.pnl_gross_cents != null ? f.pnl_gross_cents / 100 : null;
+            const cost = (f.fill_price * f.count) / 100;
+            const date = new Date(f.created_time);
+            const dateStr = `${(date.getMonth() + 1).toString().padStart(2, "0")}/${date.getDate().toString().padStart(2, "0")}`;
+            const timeStr = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const rowBg = i % 2 === 0 ? "transparent" : `${BORDER}30`;
+
             return (
-              <tr key={f.trade_id} style={{ borderBottom: `1px solid ${BORDER}15`, color: "#E2E8F0" }}>
-                <td style={{ padding: "4px 6px" }}>{new Date(f.created_time).toLocaleTimeString()}</td>
-                <td style={{ padding: "4px 6px" }}>{f.ticker}</td>
-                <td style={{ padding: "4px 6px" }}>
-                  <span style={{ color: f.side === "yes" ? TEAL : RED }}>{f.side.toUpperCase()}</span>
+              <tr key={f.trade_id} style={{ color: "#E2E8F0", background: rowBg, borderBottom: `1px solid ${BORDER}20` }}>
+                <td style={tdStyle}>
+                  <span style={{ color: "#E2E8F0" }}>{dateStr}</span>
+                  <span style={{ color: GRAY, marginLeft: 6 }}>{timeStr}</span>
                 </td>
-                <td style={{ padding: "4px 6px" }}>{f.count}</td>
-                <td style={{ padding: "4px 6px" }}>{f.fill_price}¢</td>
-                <td style={{ padding: "4px 6px" }}>
-                  <span style={{ color: outcome === "win" ? TEAL : outcome === "loss" ? RED : YELLOW }}>
+                <td style={tdStyle}>
+                  <span style={{
+                    display: "inline-block",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "2px 6px",
+                    borderRadius: 3,
+                    background: `${TEAL}15`,
+                    color: TEAL,
+                    letterSpacing: "0.06em",
+                  }}>
+                    {f.asset || "—"}
+                  </span>
+                </td>
+                <td style={tdStyle}>
+                  <span style={{
+                    display: "inline-block",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "2px 8px",
+                    borderRadius: 3,
+                    background: f.side === "yes" ? `${TEAL}18` : `${RED}18`,
+                    color: f.side === "yes" ? TEAL : RED,
+                    letterSpacing: "0.06em",
+                  }}>
+                    {f.side.toUpperCase()}
+                  </span>
+                </td>
+                <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600 }}>{f.count}</td>
+                <td style={{ ...tdStyle, textAlign: "right" }}>{f.fill_price}¢</td>
+                <td style={{ ...tdStyle, textAlign: "right", color: GRAY }}>{usd(cost)}</td>
+                <td style={tdStyle}>
+                  <span style={{
+                    display: "inline-block",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    padding: "2px 8px",
+                    borderRadius: 3,
+                    background: outcome === "win" ? `${TEAL}18` : outcome === "loss" ? `${RED}18` : `${YELLOW}15`,
+                    color: outcome === "win" ? TEAL : outcome === "loss" ? RED : YELLOW,
+                    letterSpacing: "0.06em",
+                  }}>
                     {outcome.toUpperCase()}
                   </span>
                 </td>
-                <td style={{ padding: "4px 6px", color: (pnl ?? 0) >= 0 ? TEAL : RED }}>
-                  {pnl != null ? usd(pnl) : "—"}
+                <td style={{ ...tdStyle, textAlign: "right", fontWeight: 600, color: (pnl ?? 0) >= 0 ? TEAL : RED }}>
+                  {pnl != null ? (pnl >= 0 ? `+${usd(pnl)}` : `-${usd(Math.abs(pnl))}`) : "—"}
                 </td>
               </tr>
             );
@@ -363,10 +436,8 @@ function TradingTabs({ fills }: { fills: KalshiFill[] }) {
       {/* Tab content */}
       {tab === "live" ? (
         <div>
-          <div style={{ fontSize: 9, fontFamily: mono, color: GRAY, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 8 }}>
-            Real Kalshi Fills
-          </div>
-          <FillsTable fills={fills} />
+          <LiveFillsStats fills={fills} />
+          <LiveFillsTable fills={fills} />
         </div>
       ) : (
         <PaperTradingSection />
