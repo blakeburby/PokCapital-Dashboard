@@ -15,7 +15,6 @@ import {
   getFills,
   getSignals,
 } from "@/lib/api";
-import RealTradingSection from "@/components/RealTradingSection";
 import PaperTradingSection from "@/components/PaperTradingSection";
 import { useState, useMemo } from "react";
 
@@ -368,7 +367,6 @@ function TradingTabs({ fills }: { fills: KalshiFill[] }) {
             Real Kalshi Fills
           </div>
           <FillsTable fills={fills} />
-          <RealTradingSection />
         </div>
       ) : (
         <PaperTradingSection />
