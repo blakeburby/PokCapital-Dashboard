@@ -163,6 +163,7 @@ type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window
 type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
 type OpsWindow = "15m" | "1h" | "24h";
 type LedgerWindow = "today" | "7d" | "all";
+type StageMetric = { label: string; value: number; tone: Tone; sub: string };
 
 interface FillSummarySnapshot {
   totalFills: number;
@@ -737,7 +738,7 @@ function ExecutionFunnel({
   funnel,
   windowLabel,
 }: {
-  funnel: Array<{ label: string; value: number; tone: Tone; sub: string }>;
+  funnel: StageMetric[];
   windowLabel: string;
 }) {
   return (
@@ -768,7 +769,7 @@ function AnomalySummary({
   anomalies,
   windowLabel,
 }: {
-  anomalies: Array<{ label: string; value: number; tone: Tone; sub: string }>;
+  anomalies: StageMetric[];
   windowLabel: string;
 }) {
   return (
@@ -1084,7 +1085,7 @@ export default function HomePage() {
 
     return { counts, orderableCount, recentlyCommittedCount };
   }, [workers]);
-  const executionFunnel = useMemo(() => {
+  const executionFunnel = useMemo<StageMetric[]>(() => {
     const candidateCount = workers.filter((worker) => worker.candidateDirection != null).length;
     const committedCount = workers.filter((worker) =>
       worker.lastCommittedCandidateAt != null &&
@@ -1108,7 +1109,7 @@ export default function HomePage() {
       { label: "Settled", value: opsFills.filter((fill) => fill.outcome === "win" || fill.outcome === "loss").length, tone: opsFills.some((fill) => fill.outcome === "win" || fill.outcome === "loss") ? "green" : "blue", sub: "resolved fills in window" },
     ];
   }, [workers, blockerSummary.orderableCount, opsRecentEvents, opsLogLines, opsFills, opsWindow]);
-  const anomalySummary = useMemo(() => {
+  const anomalySummary = useMemo<StageMetric[]>(() => {
     const rejectedOrders = countMatches(opsRecentEvents, /rejected|invalid_order/i) + countMatches(opsLogLines, /rejected|invalid_order/i);
     const dataWarnings = countMatches(opsRecentEvents, /market_data_unavailable|top[- ]of[- ]book|missing ask|crypto_unavailable/i)
       + countMatches(opsLogLines, /market_data_unavailable|top[- ]of[- ]book|missing ask|crypto_unavailable/i);
