@@ -2,12 +2,11 @@
 
 import type { ReactNode } from "react";
 import useSWR from "swr";
-import { getEndpointLatency, getHealth, getStatus, type BackendHealth, type BackendStatus, type WorkerSnapshot } from "@/lib/api";
+import { getHealth, getStatus, type BackendHealth, type BackendStatus, type WorkerSnapshot } from "@/lib/api";
 import {
   Activity,
   AlertTriangle,
   Clock,
-  Gauge,
   Server,
   Shield,
   Target,
@@ -34,7 +33,8 @@ function formatUptime(minutes: number): string {
 
 function formatPercent(value: number | null): string {
   if (value == null) return "—";
-  return `${(value * 100).toFixed(1)}%`;
+  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
+  return `${normalized.toFixed(1)}%`;
 }
 
 function formatAgeMs(value: number | null): string {
@@ -54,6 +54,27 @@ function formatCooldown(value: number): string {
   return `${Math.ceil(value / 60_000)}m`;
 }
 
+function formatMoment(value: string | number | null | undefined): string {
+  if (value == null) return "never";
+  const date = typeof value === "number" ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "never";
+  return relativeTime(date.toISOString());
+}
+
+function formatBook(worker: WorkerSnapshot): string {
+  const yesBid = worker.marketYesBidCents;
+  const yesAsk = worker.marketYesAskCents;
+  const noBid = worker.marketNoBidCents;
+  const noAsk = worker.marketNoAskCents;
+  if ([yesBid, yesAsk, noBid, noAsk].every((value) => value == null)) return "—";
+  return `Y ${yesBid ?? "—"}/${yesAsk ?? "—"} · N ${noBid ?? "—"}/${noAsk ?? "—"}`;
+}
+
+function formatMarketSource(source: string | null | undefined): string {
+  if (!source) return "—";
+  return source.replace(/^kalshi_/, "").replace(/_/g, " ");
+}
+
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
 
 function toneColor(tone: Tone): string {
@@ -66,8 +87,9 @@ function toneColor(tone: Tone): string {
 
 function workerTone(worker: WorkerSnapshot): Tone {
   if (worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000) return "red";
-  if (worker.marketTicker == null || worker.currentPrice == null) return "amber";
-  if (worker.noTradeReason) return "amber";
+  if (worker.marketTicker == null || worker.currentPrice == null || worker.hasValidAsk === false) return "amber";
+  const reason = (worker.noTradeReason ?? "").toLowerCase();
+  if (reason.includes("crypto") || reason.includes("spot") || reason.includes("market") || reason.includes("ask")) return "amber";
   return "green";
 }
 
@@ -145,16 +167,18 @@ function WorkerCard({ worker }: { worker: WorkerSnapshot }) {
           <p className="font-mono text-text">{formatCents(worker.currentEV)}</p>
         </div>
         <div>
+          <p className="text-muted">Book</p>
+          <p className="font-mono text-text">{formatBook(worker)}</p>
+        </div>
+        <div>
           <p className="text-muted">Spread</p>
           <p className="font-mono text-text">
             {worker.orderbookSpread > 0 ? `${worker.orderbookSpread.toFixed(1)}c` : "—"}
           </p>
         </div>
         <div>
-          <p className="text-muted">Model / Market</p>
-          <p className="font-mono text-text">
-            {formatPercent(worker.modelProbability)} / {formatPercent(worker.marketProbability)}
-          </p>
+          <p className="text-muted">Source</p>
+          <p className="font-mono text-text">{formatMarketSource(worker.marketDataSource)}</p>
         </div>
         <div>
           <p className="text-muted">Confidence</p>
@@ -166,6 +190,9 @@ function WorkerCard({ worker }: { worker: WorkerSnapshot }) {
 
       <div className="flex flex-wrap gap-2">
         {worker.regime ? <span className="badge badge-blue">{worker.regime}</span> : null}
+        <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
+          {worker.hasValidAsk ? "orderable" : "no ask"}
+        </span>
         {worker.candidateDirection ? (
           <span className={worker.candidateDirection === "yes" ? "badge badge-green" : "badge badge-red"}>
             {worker.candidateDirection.toUpperCase()}
@@ -176,6 +203,9 @@ function WorkerCard({ worker }: { worker: WorkerSnapshot }) {
         ) : null}
         {worker.stabilityCount != null ? (
           <span className="badge badge-gray">Stability {worker.stabilityCount}</span>
+        ) : null}
+        {worker.lastCommittedCandidateAt ? (
+          <span className="badge badge-blue">Committed {formatMoment(worker.lastCommittedCandidateAt)}</span>
         ) : null}
       </div>
 
@@ -332,11 +362,11 @@ export default function BackendStatusPanel() {
               tone={heartbeatStale ? "red" : "green"}
             />
             <MiniCard
-              label="Trades API"
-              value={getEndpointLatency("/api/trades") != null ? `${getEndpointLatency("/api/trades")}ms` : "—"}
-              sub="frontend proxy latency"
-              icon={<Gauge size={11} />}
-              tone={highLatency ? "amber" : "blue"}
+              label="Orderable"
+              value={`${workers.filter((worker) => worker.hasValidAsk).length}/${workers.length || 0}`}
+              sub="workers with valid asks"
+              icon={<Target size={11} />}
+              tone={workers.length > 0 && workers.every((worker) => worker.hasValidAsk) ? "green" : "amber"}
             />
             <MiniCard
               label="Trade Count"

@@ -70,7 +70,8 @@ function formatCents(value: number | null | undefined): string {
 
 function formatPercent(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
-  return `${(value * 100).toFixed(1)}%`;
+  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
+  return `${normalized.toFixed(1)}%`;
 }
 
 function formatRelativeTime(isoOrNull: string | null | undefined): string {
@@ -105,6 +106,7 @@ function formatCount(value: number | null | undefined): string {
 }
 
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
+type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window" | "other";
 
 function toneValue(tone: Tone): { color: string; background: string } {
   if (tone === "green") return { color: "#22C55E", background: "rgba(34,197,94,0.12)" };
@@ -118,6 +120,72 @@ function assetFromFill(fill: KalshiFill): string {
   if (fill.asset) return fill.asset;
   const match = fill.ticker.match(/^KX([A-Z]+)\d/);
   return match ? match[1] : fill.ticker.split("-")[0];
+}
+
+function formatRelativeMoment(value: string | number | null | undefined): string {
+  if (value == null) return "never";
+  const date = typeof value === "number" ? new Date(value) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "never";
+  return formatRelativeTime(date.toISOString());
+}
+
+function formatBook(worker: BackendStatus["workers"][number]): string {
+  const yesBid = worker.marketYesBidCents;
+  const yesAsk = worker.marketYesAskCents;
+  const noBid = worker.marketNoBidCents;
+  const noAsk = worker.marketNoAskCents;
+  if ([yesBid, yesAsk, noBid, noAsk].every((value) => value == null)) return "—";
+  return `Y ${yesBid ?? "—"}/${yesAsk ?? "—"} · N ${noBid ?? "—"}/${noAsk ?? "—"}`;
+}
+
+function formatMarketSource(source: string | null | undefined): string {
+  if (!source) return "—";
+  return source.replace(/^kalshi_/, "").replace(/_/g, " ");
+}
+
+function classifyWorkerBlocker(worker: BackendStatus["workers"][number]): BlockerCategory {
+  if (worker.marketTicker == null || worker.currentPrice == null || worker.hasValidAsk === false) return "data";
+
+  const reason = (worker.noTradeReason ?? "").toLowerCase();
+  if (!reason) return "clear";
+  if (reason.includes("confidence")) return "confidence";
+  if (reason.includes("ev")) return "ev";
+  if (
+    reason.includes("crypto") ||
+    reason.includes("spot") ||
+    reason.includes("market data") ||
+    reason.includes("missing ask") ||
+    reason.includes("missing_ask") ||
+    reason.includes("orderbook") ||
+    reason.includes("top-of-book") ||
+    reason.includes("top of book")
+  ) return "data";
+  if (
+    reason.includes("cooldown") ||
+    reason.includes("position") ||
+    reason.includes("bankroll") ||
+    reason.includes("kelly") ||
+    reason.includes("correlation") ||
+    reason.includes("exposure") ||
+    reason.includes("suppressed")
+  ) return "risk";
+  if (
+    reason.includes("window") ||
+    reason.includes("cutoff") ||
+    reason.includes("expired") ||
+    reason.includes("minutes left")
+  ) return "window";
+  return "other";
+}
+
+function sampleMeta(
+  n: number | null | undefined,
+  unit: string
+): { label: string; detail: string; tone: Tone } | null {
+  if (n == null || Number.isNaN(n)) return null;
+  if (n < 5) return { label: `n=${n}`, detail: `very low ${unit}`, tone: "red" };
+  if (n < 20) return { label: `n=${n}`, detail: `provisional ${unit}`, tone: "amber" };
+  return { label: `n=${n}`, detail: `${unit}`, tone: "green" };
 }
 
 function deriveOperatorState(health: BackendHealth | undefined, status: BackendStatus | null | undefined) {
@@ -180,12 +248,14 @@ function MetricCard({
   sub,
   tone = "blue",
   icon,
+  badge,
 }: {
   label: string;
   value: string;
   sub?: string;
   tone?: Tone;
   icon?: ReactNode;
+  badge?: { label: string; tone: Tone } | null;
 }) {
   const palette = toneValue(tone);
   return (
@@ -193,9 +263,12 @@ function MetricCard({
       className="panel flex flex-col gap-1 min-w-0"
       style={{ background: "linear-gradient(180deg, rgba(15,17,23,0.95), rgba(15,17,23,0.78))" }}
     >
-      <div className="flex items-center gap-2">
-        {icon ? <span style={{ color: palette.color }}>{icon}</span> : null}
-        <span className="section-label" style={{ marginBottom: 0 }}>{label}</span>
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          {icon ? <span style={{ color: palette.color }}>{icon}</span> : null}
+          <span className="section-label" style={{ marginBottom: 0 }}>{label}</span>
+        </div>
+        {badge ? <HeroSignal label={badge.label} tone={badge.tone} /> : null}
       </div>
       <span className="text-2xl font-semibold font-mono tracking-tight" style={{ color: palette.color }}>
         {value}
@@ -321,7 +394,7 @@ function BreakdownTable({
             <thead>
               <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
                 <th className="py-2 font-medium">Segment</th>
-                <th className="py-2 font-medium">Fills</th>
+                <th className="py-2 font-medium">Settled / Total</th>
                 <th className="py-2 font-medium">Win Rate</th>
                 <th className="py-2 font-medium">Gross PnL</th>
                 <th className="py-2 font-medium">Avg EV</th>
@@ -331,7 +404,9 @@ function BreakdownTable({
               {entries.map(([key, row]) => (
                 <tr key={key} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
                   <td className="py-2 font-medium text-text">{key}</td>
-                  <td className="py-2 font-mono text-muted">{formatCount(row.fills)}</td>
+                  <td className="py-2 font-mono text-muted">
+                    {formatCount(row.settled)} / {formatCount(row.fills)}
+                  </td>
                   <td className="py-2 font-mono text-muted">{formatPercent(row.winRate)}</td>
                   <td className="py-2 font-mono" style={{ color: row.grossPnlCents >= 0 ? "#22C55E" : "#EF4444" }}>
                     {formatCents(row.grossPnlCents)}
@@ -546,10 +621,13 @@ export default function HomePage() {
 
   const operator = useMemo(() => deriveOperatorState(health, status), [health, status]);
   const summary = analytics?.summary;
+  const strategyFills = useMemo(
+    () => (fills ?? []).filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase())),
+    [fills]
+  );
   const fillsSectionSummary = useMemo(() => {
-    if (!fills) return summary ?? null;
-    const strategyFills = fills.filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()));
-    if (strategyFills.length === 0) return summary ?? null;
+    if (summary) return summary;
+    if (strategyFills.length === 0) return null;
 
     const settledFills = strategyFills.filter(
       (fill): fill is KalshiFill & { outcome: "win" | "loss" } =>
@@ -576,11 +654,11 @@ export default function HomePage() {
       estimatedFeeCents,
       netPnlCents,
       matchedFills: strategyFills.filter((fill) => !!fill.paper_trade_id).length,
-      fillsFromDb: summary?.fillsFromDb ?? true,
+      fillsFromDb: true,
       firstFillAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null,
       lastFillAt: timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null,
     };
-  }, [fills, summary]);
+  }, [strategyFills, summary]);
   const fillsMatchRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
     ? fillsSectionSummary.matchedFills / fillsSectionSummary.totalFills
     : null;
@@ -601,6 +679,30 @@ export default function HomePage() {
     if (ages.length === 0) return null;
     return Math.max(...ages);
   }, [status]);
+  const workers = status?.workers ?? [];
+  const blockerSummary = useMemo(() => {
+    const counts: Record<BlockerCategory, number> = {
+      clear: 0,
+      confidence: 0,
+      ev: 0,
+      data: 0,
+      risk: 0,
+      window: 0,
+      other: 0,
+    };
+
+    for (const worker of workers) {
+      counts[classifyWorkerBlocker(worker)] += 1;
+    }
+
+    const orderableCount = workers.filter((worker) => worker.hasValidAsk).length;
+    const recentlyCommittedCount = workers.filter((worker) => worker.lastCommittedCandidateAt != null).length;
+
+    return { counts, orderableCount, recentlyCommittedCount };
+  }, [workers]);
+  const settledSample = sampleMeta(fillsSectionSummary?.settledFills, "settled fills");
+  const linkedSample = sampleMeta(fillsSectionSummary?.matchedFills, "linked fills");
+  const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
 
   return (
     <main
@@ -701,8 +803,52 @@ export default function HomePage() {
             title="Worker readiness and operator gates"
             subtitle="This strip condenses the current worker state into quick operational signals without hiding the reasons behind a blocked engine."
           />
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mb-4">
+            <MetricCard
+              label="Orderable"
+              value={`${blockerSummary.orderableCount}/${workers.length || 0}`}
+              sub="workers with valid asks"
+              tone={blockerSummary.orderableCount === workers.length && workers.length > 0 ? "green" : "amber"}
+              icon={<Shield size={14} />}
+            />
+            <MetricCard
+              label="Confidence Gate"
+              value={formatCount(blockerSummary.counts.confidence)}
+              sub="blocked by confidence threshold"
+              tone={blockerSummary.counts.confidence > 0 ? "amber" : "green"}
+              icon={<Target size={14} />}
+            />
+            <MetricCard
+              label="EV Gate"
+              value={formatCount(blockerSummary.counts.ev)}
+              sub="blocked by edge/EV threshold"
+              tone={blockerSummary.counts.ev > 0 ? "amber" : "green"}
+              icon={<Sparkles size={14} />}
+            />
+            <MetricCard
+              label="Data Gate"
+              value={formatCount(blockerSummary.counts.data)}
+              sub="crypto, market, or ask unavailable"
+              tone={blockerSummary.counts.data > 0 ? "red" : "green"}
+              icon={<AlertTriangle size={14} />}
+            />
+            <MetricCard
+              label="Risk Gate"
+              value={formatCount(blockerSummary.counts.risk)}
+              sub="cooldown, sizing, or exposure controls"
+              tone={blockerSummary.counts.risk > 0 ? "amber" : "green"}
+              icon={<Shield size={14} />}
+            />
+            <MetricCard
+              label="Committed"
+              value={formatCount(blockerSummary.recentlyCommittedCount)}
+              sub="workers with a recent committed candidate"
+              tone={blockerSummary.recentlyCommittedCount > 0 ? "green" : "blue"}
+              icon={<Activity size={14} />}
+            />
+          </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {(status?.workers ?? []).map((worker) => (
+            {workers.map((worker) => (
               <div
                 key={worker.assetKey}
                 className="panel"
@@ -722,10 +868,16 @@ export default function HomePage() {
                     </p>
                     <p className="text-xs text-muted truncate">{worker.marketTicker ?? "No market ticker"}</p>
                   </div>
-                  <HeroSignal
-                    label={worker.enginePhase ?? "idle"}
-                    tone={worker.noTradeReason ? "amber" : "green"}
-                  />
+                  <div className="flex flex-col gap-2 items-end">
+                    <HeroSignal
+                      label={worker.enginePhase ?? "idle"}
+                      tone={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000 ? "red" : "blue"}
+                    />
+                    <HeroSignal
+                      label={worker.hasValidAsk ? "orderable" : "no ask"}
+                      tone={worker.hasValidAsk ? "green" : "amber"}
+                    />
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm">
                   <div>
@@ -739,6 +891,14 @@ export default function HomePage() {
                     </p>
                   </div>
                   <div>
+                    <p className="text-muted">Book</p>
+                    <p className="font-mono text-text">{formatBook(worker)}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted">Source</p>
+                    <p className="font-mono text-text">{formatMarketSource(worker.marketDataSource)}</p>
+                  </div>
+                  <div>
                     <p className="text-muted">Regime</p>
                     <p className="font-mono text-text">{worker.regime ?? "—"}</p>
                   </div>
@@ -749,6 +909,14 @@ export default function HomePage() {
                     </p>
                   </div>
                 </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {worker.lastOrderableAt ? (
+                    <span className="badge badge-gray">orderable {formatRelativeMoment(worker.lastOrderableAt)}</span>
+                  ) : null}
+                  {worker.lastCommittedCandidateAt ? (
+                    <span className="badge badge-blue">committed {formatRelativeMoment(worker.lastCommittedCandidateAt)}</span>
+                  ) : null}
+                </div>
                 <div className="mt-4 rounded-xl px-3 py-2" style={{ backgroundColor: "rgba(2,6,23,0.42)" }}>
                   <p className="text-xs text-muted mb-1">No-trade reason</p>
                   <p className="text-sm text-text">
@@ -757,7 +925,7 @@ export default function HomePage() {
                 </div>
               </div>
             ))}
-            {(status?.workers.length ?? 0) === 0 ? (
+            {workers.length === 0 ? (
               <div className="panel md:col-span-2 xl:col-span-4 text-sm text-muted">
                 Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset readiness and trade blockers.
               </div>
@@ -776,30 +944,34 @@ export default function HomePage() {
             <MetricCard
               label="Win Rate"
               value={formatPercent(summary?.winRate)}
-              sub={`${formatCount(summary?.winsCount)} wins / ${formatCount(summary?.lossesCount)} losses`}
+              sub={`${formatCount(summary?.winsCount)} wins / ${formatCount(summary?.lossesCount)} losses${settledSample ? ` · ${settledSample.detail}` : ""}`}
               tone={summary != null && (summary.winRate ?? 0) >= 0.5 ? "green" : "amber"}
               icon={<Target size={14} />}
+              badge={settledSample ? { label: settledSample.label, tone: settledSample.tone } : null}
             />
             <MetricCard
               label="Avg EV"
               value={summary?.avgEvCents != null ? `${summary.avgEvCents >= 0 ? "+" : ""}${summary.avgEvCents.toFixed(1)}c` : "—"}
-              sub="matched fills only"
+              sub={`matched fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
               tone="violet"
               icon={<Sparkles size={14} />}
+              badge={linkedSample ? { label: linkedSample.label, tone: linkedSample.tone } : null}
             />
             <MetricCard
               label="Avg Confidence"
               value={formatPercent(summary?.avgConfidence)}
-              sub="matched fills only"
+              sub={`matched fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
               tone="blue"
               icon={<Shield size={14} />}
+              badge={linkedSample ? { label: linkedSample.label, tone: linkedSample.tone } : null}
             />
             <MetricCard
               label="Avg Slippage"
               value={summary?.avgSlippageCents != null ? `${summary.avgSlippageCents >= 0 ? "+" : ""}${summary.avgSlippageCents.toFixed(1)}c` : "—"}
-              sub="fill versus paper entry"
+              sub={`fill versus paper entry${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
               tone={summary != null && (summary.avgSlippageCents ?? 0) > 0 ? "amber" : "green"}
               icon={<ArrowUpRight size={14} />}
+              badge={linkedSample ? { label: linkedSample.label, tone: linkedSample.tone } : null}
             />
           </div>
 
@@ -878,16 +1050,18 @@ export default function HomePage() {
             <MetricCard
               label="Match Rate"
               value={formatPercent(fillsMatchRate)}
-              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.matchedFills)} of ${formatCount(fillsSectionSummary.totalFills)} fills linked to trades` : "trade linkage"}
+              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.matchedFills)} of ${formatCount(fillsSectionSummary.totalFills)} fills linked to trades${totalFillSample ? ` · ${totalFillSample.detail}` : ""}` : "trade linkage"}
               tone={fillsMatchRate != null && fillsMatchRate > 0 ? "blue" : "amber"}
               icon={<Database size={14} />}
+              badge={totalFillSample ? { label: totalFillSample.label, tone: totalFillSample.tone } : null}
             />
             <MetricCard
               label="Settlement Trail"
               value={fillsSectionSummary ? `${formatCount(fillsSectionSummary.settledFills)} settled` : "—"}
-              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.winsCount)} wins / ${formatCount(fillsSectionSummary.lossesCount)} losses · ${formatPercent(fillsSettledRate)} settled` : "reconciliation status"}
+              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.winsCount)} wins / ${formatCount(fillsSectionSummary.lossesCount)} losses · ${formatPercent(fillsSettledRate)} settled${settledSample ? ` · ${settledSample.detail}` : ""}` : "reconciliation status"}
               tone={fillsSectionSummary != null && fillsSectionSummary.pendingFills > 0 ? "amber" : "green"}
               icon={<Activity size={14} />}
+              badge={settledSample ? { label: settledSample.label, tone: settledSample.tone } : null}
             />
             <MetricCard
               label="Ledger Source"

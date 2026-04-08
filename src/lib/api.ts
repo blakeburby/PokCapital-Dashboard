@@ -162,6 +162,14 @@ export interface WorkerSnapshot {
   confidence: number | null;
   kellyFraction: number | null;
   cryptoPriceAgeMs: number | null;
+  marketYesBidCents?: number | null;
+  marketYesAskCents?: number | null;
+  marketNoBidCents?: number | null;
+  marketNoAskCents?: number | null;
+  marketDataSource?: string | null;
+  hasValidAsk?: boolean | null;
+  lastOrderableAt?: number | null;
+  lastCommittedCandidateAt?: string | number | null;
 }
 
 export interface BackendStatus {
