@@ -546,11 +546,46 @@ export default function HomePage() {
 
   const operator = useMemo(() => deriveOperatorState(health, status), [health, status]);
   const summary = analytics?.summary;
-  const matchRate = summary && summary.totalFills > 0
-    ? summary.matchedFills / summary.totalFills
+  const fillsSectionSummary = useMemo(() => {
+    if (!fills) return summary ?? null;
+    const strategyFills = fills.filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()));
+    if (strategyFills.length === 0) return summary ?? null;
+
+    const settledFills = strategyFills.filter(
+      (fill): fill is KalshiFill & { outcome: "win" | "loss" } =>
+        fill.outcome === "win" || fill.outcome === "loss"
+    );
+    const winsCount = settledFills.filter((fill) => fill.outcome === "win").length;
+    const lossesCount = settledFills.filter((fill) => fill.outcome === "loss").length;
+    const estimatedFeeCents = settledFills.reduce((sum, fill) => sum + (fill.fee_cents ?? 0), 0);
+    const netPnlCents = settledFills.reduce(
+      (sum, fill) => sum + (deriveFillNetPnlCents(fill, fill.outcome) ?? 0),
+      0
+    );
+    const timestamps = strategyFills
+      .map((fill) => new Date(fill.created_time).getTime())
+      .filter((value) => Number.isFinite(value));
+
+    return {
+      totalFills: strategyFills.length,
+      settledFills: settledFills.length,
+      pendingFills: strategyFills.length - settledFills.length,
+      winsCount,
+      lossesCount,
+      grossPnlCents: netPnlCents + estimatedFeeCents,
+      estimatedFeeCents,
+      netPnlCents,
+      matchedFills: strategyFills.filter((fill) => !!fill.paper_trade_id).length,
+      fillsFromDb: summary?.fillsFromDb ?? true,
+      firstFillAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null,
+      lastFillAt: timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null,
+    };
+  }, [fills, summary]);
+  const fillsMatchRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
+    ? fillsSectionSummary.matchedFills / fillsSectionSummary.totalFills
     : null;
-  const settledRate = summary && summary.totalFills > 0
-    ? summary.settledFills / summary.totalFills
+  const fillsSettledRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
+    ? fillsSectionSummary.settledFills / fillsSectionSummary.totalFills
     : null;
   const fastestWorkerAge = useMemo(() => {
     const ages = (status?.workers ?? [])
@@ -835,39 +870,39 @@ export default function HomePage() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-4">
             <MetricCard
               label="Net PnL"
-              value={formatCents(summary?.netPnlCents)}
-              sub={summary ? `${formatCents(summary.grossPnlCents)} gross less ${formatCents(summary.estimatedFeeCents)} fees` : "settled ledger PnL"}
-              tone={summary != null && summary.netPnlCents < 0 ? "red" : "green"}
+              value={formatCents(fillsSectionSummary?.netPnlCents)}
+              sub={fillsSectionSummary ? `${formatCents(fillsSectionSummary.grossPnlCents)} gross less ${formatCents(fillsSectionSummary.estimatedFeeCents)} fees` : "settled ledger PnL"}
+              tone={fillsSectionSummary != null && fillsSectionSummary.netPnlCents < 0 ? "red" : "green"}
               icon={<TrendingUp size={14} />}
             />
             <MetricCard
               label="Match Rate"
-              value={formatPercent(matchRate)}
-              sub={summary ? `${formatCount(summary.matchedFills)} of ${formatCount(summary.totalFills)} fills linked to trades` : "trade linkage"}
-              tone={matchRate != null && matchRate > 0 ? "blue" : "amber"}
+              value={formatPercent(fillsMatchRate)}
+              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.matchedFills)} of ${formatCount(fillsSectionSummary.totalFills)} fills linked to trades` : "trade linkage"}
+              tone={fillsMatchRate != null && fillsMatchRate > 0 ? "blue" : "amber"}
               icon={<Database size={14} />}
             />
             <MetricCard
               label="Settlement Trail"
-              value={summary ? `${formatCount(summary.settledFills)} settled` : "—"}
-              sub={summary ? `${formatCount(summary.winsCount)} wins / ${formatCount(summary.lossesCount)} losses · ${formatPercent(settledRate)} settled` : "reconciliation status"}
-              tone={summary != null && summary.pendingFills > 0 ? "amber" : "green"}
+              value={fillsSectionSummary ? `${formatCount(fillsSectionSummary.settledFills)} settled` : "—"}
+              sub={fillsSectionSummary ? `${formatCount(fillsSectionSummary.winsCount)} wins / ${formatCount(fillsSectionSummary.lossesCount)} losses · ${formatPercent(fillsSettledRate)} settled` : "reconciliation status"}
+              tone={fillsSectionSummary != null && fillsSectionSummary.pendingFills > 0 ? "amber" : "green"}
               icon={<Activity size={14} />}
             />
             <MetricCard
               label="Ledger Source"
-              value={summary?.fillsFromDb ? "Postgres" : "Fallback"}
+              value={fillsSectionSummary?.fillsFromDb ? "Postgres" : "Fallback"}
               sub={
-                summary?.lastFillAt
-                  ? `${formatRelativeTime(summary.lastFillAt)} latest · ${summary.firstFillAt ? `first ${formatShortTimestamp(summary.firstFillAt)}` : "no first fill"}`
+                fillsSectionSummary?.lastFillAt
+                  ? `${formatRelativeTime(fillsSectionSummary.lastFillAt)} latest · ${fillsSectionSummary.firstFillAt ? `first ${formatShortTimestamp(fillsSectionSummary.firstFillAt)}` : "no first fill"}`
                   : "awaiting fills"
               }
-              tone={summary?.fillsFromDb ? "green" : "amber"}
+              tone={fillsSectionSummary?.fillsFromDb ? "green" : "amber"}
               icon={<Shield size={14} />}
             />
           </div>
 
-          {summary != null && summary.matchedFills === 0 ? (
+          {fillsSectionSummary != null && fillsSectionSummary.matchedFills === 0 ? (
             <div
               className="panel mb-4 text-sm text-muted"
               style={{ background: "linear-gradient(180deg, rgba(15,17,23,0.95), rgba(15,17,23,0.78))" }}
