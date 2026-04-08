@@ -53,6 +53,12 @@ function formatMarketSource(source: string | null | undefined): string {
   return source.replace(/^kalshi_/, "").replace(/_/g, " ");
 }
 
+function isOneSidedBook(worker: WorkerSnapshot): boolean {
+  const asks = [worker.marketYesAskCents, worker.marketNoAskCents];
+  const bids = [worker.marketYesBidCents, worker.marketNoBidCents];
+  return asks.some((value) => value != null && value >= 99) || bids.some((value) => value != null && value <= 1);
+}
+
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
 
 function toneColor(tone: Tone): string {
@@ -65,6 +71,8 @@ function toneColor(tone: Tone): string {
 
 function workerTone(worker: WorkerSnapshot): Tone {
   if (worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000) return "red";
+  if (isOneSidedBook(worker)) return "amber";
+  if (worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker") return "amber";
   if (worker.marketTicker == null || worker.currentPrice == null || worker.hasValidAsk === false) return "amber";
   const reason = (worker.noTradeReason ?? "").toLowerCase();
   if (reason.includes("crypto") || reason.includes("spot") || reason.includes("market") || reason.includes("ask")) return "amber";
@@ -262,7 +270,15 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
               value={`${workers.filter((worker) => worker.hasValidAsk).length}/${workers.length || 0}`}
               sub="workers with valid asks"
               icon={<Target size={11} />}
-              tone={workers.length > 0 && workers.every((worker) => worker.hasValidAsk) ? "green" : "amber"}
+              tone={
+                workers.length === 0
+                  ? "blue"
+                  : workers.every((worker) => worker.hasValidAsk)
+                    ? "green"
+                    : workers.some((worker) => worker.hasValidAsk)
+                      ? "amber"
+                      : "red"
+              }
             />
             <MiniCard
               label="Logs"
@@ -300,6 +316,7 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
                 {hardWarnings.length > 0 ? <span className="badge badge-red">{hardWarnings.length} stale quote worker{hardWarnings.length === 1 ? "" : "s"}</span> : null}
                 {softWarnings.length > 0 ? <span className="badge badge-amber">{softWarnings.length} missing market/spot worker{softWarnings.length === 1 ? "" : "s"}</span> : null}
                 {degradedWorkers.length > 0 ? <span className="badge badge-blue">{degradedWorkers.length} fallback data source worker{degradedWorkers.length === 1 ? "" : "s"}</span> : null}
+                {workers.some(isOneSidedBook) ? <span className="badge badge-amber">{workers.filter(isOneSidedBook).length} one-sided book worker{workers.filter(isOneSidedBook).length === 1 ? "" : "s"}</span> : null}
                 {hardWarnings.length === 0 && softWarnings.length === 0 && !heartbeatStale && !logStale && !highLatency ? (
                   <span className="badge badge-green">no active health exceptions</span>
                 ) : null}
@@ -316,7 +333,7 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
                       <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
-                        {worker.hasValidAsk ? "ready" : "blocked"}
+                        {worker.hasValidAsk ? (isOneSidedBook(worker) ? "fragile" : "ready") : "blocked"}
                       </span>
                     </div>
                     <p className="mt-1 font-mono text-muted">{formatMarketSource(worker.marketDataSource)}</p>
