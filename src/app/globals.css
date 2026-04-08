@@ -85,4 +85,5 @@ body {
 .badge-green  { background: rgba(0,230,118,0.12);  color: #00E676; }
 .badge-red    { background: rgba(255,61,87,0.12);  color: #FF3D57; }
 .badge-amber  { background: rgba(255,179,0,0.12);  color: #FFB300; }
+.badge-blue   { background: rgba(56,189,248,0.12); color: #38BDF8; }
 .badge-gray   { background: rgba(75,85,99,0.15);   color: #6B7280; }

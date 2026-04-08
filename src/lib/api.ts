@@ -51,19 +51,32 @@ export interface AccountBalance {
   balanceDollars: number;
 }
 
+export interface PaperBalance extends AccountBalance {
+  startingBalanceCents: number;
+  startingBalanceDollars: number;
+}
+
 // ─── Kalshi Fills ─────────────────────────────────────────────────────────────
 
 export interface KalshiFill {
   trade_id: string;
   order_id: string;
   ticker: string;
+  asset?: string;
   action: "buy" | "sell";
   side: "yes" | "no";
   count: number;
   yes_price: number;
   no_price: number;
+  fill_price?: number;
   is_taker: boolean;
+  fee_cents?: number | null;
   created_time: string;
+  ingested_at?: string;
+  paper_trade_id?: string | null;
+  outcome?: "win" | "loss" | null;
+  pnl_gross_cents?: number | null;
+  pnl_net_cents?: number | null;
 }
 
 // ─── Kalshi Market Price ──────────────────────────────────────────────────────
@@ -131,6 +144,17 @@ export interface WorkerSnapshot {
   orderbookSpread: number;
   lastTradeTimestamp: number;
   pendingTickers: string[];
+  noTradeReason: string | null;
+  currentEV: number | null;
+  stabilityCount: number | null;
+  cooldownRemainingMs: number;
+  candidateDirection: "yes" | "no" | null;
+  regime: "R1" | "R2" | "R3" | null;
+  modelProbability: number | null;
+  marketProbability: number | null;
+  confidence: number | null;
+  kellyFraction: number | null;
+  cryptoPriceAgeMs: number | null;
 }
 
 export interface BackendStatus {
@@ -139,6 +163,59 @@ export interface BackendStatus {
   positionTracker: { active: number; max: number };
   recentEvents: string[];
   latencyMs: number | null;
+}
+
+export interface BreakdownRow {
+  fills: number;
+  settled: number;
+  wins: number;
+  losses: number;
+  winRate: number | null;
+  grossPnlCents: number;
+  avgFillPrice?: number;
+  capitalUSD?: number;
+  avgEvCents?: number | null;
+  avgModelProb?: number | null;
+  avgSlippageCents?: number | null;
+}
+
+export interface FillAnalytics {
+  summary: {
+    totalFills: number;
+    settledFills: number;
+    pendingFills: number;
+    winsCount: number;
+    lossesCount: number;
+    winRate: number | null;
+    grossPnlCents: number;
+    estimatedFeeCents: number;
+    netPnlCents: number;
+    avgFillPrice: number;
+    firstFillAt: string | null;
+    lastFillAt: string | null;
+    totalCapitalUSD: number;
+    avgEvCents: number | null;
+    avgConfidence: number | null;
+    avgSlippageCents: number | null;
+    matchedFills: number;
+    dataLastUpdated: string;
+    fillsFromDb: boolean;
+  };
+  byAsset: Record<string, BreakdownRow>;
+  byRegime: Record<string, BreakdownRow>;
+  bySide: Record<string, BreakdownRow>;
+  dailyPnl: Array<{
+    date: string;
+    fills: number;
+    settled: number;
+    wins: number;
+    losses: number;
+    grossPnlCents: number;
+  }>;
+  balanceHistory: Array<{
+    timestamp: string;
+    balanceCents: number;
+  }>;
 }
 
 // ─── Per-Endpoint Latency Tracking ───────────────────────────────────────────
@@ -248,19 +325,37 @@ export async function getFills(): Promise<KalshiFill[]> {
 }
 
 export async function getHealth(): Promise<BackendHealth> {
-  const res = await fetch("/api/health", { cache: "no-store" });
+  const res = await timedFetch("/api/health", { cache: "no-store" });
   const data = await res.json();
   return data as BackendHealth;
 }
 
 export async function getStatus(): Promise<BackendStatus | null> {
   try {
-    const res = await fetch("/api/status", { cache: "no-store" });
+    const res = await timedFetch("/api/status", { cache: "no-store" });
     if (!res.ok) return null;
     return (await res.json()) as BackendStatus;
   } catch {
     return null;
   }
+}
+
+export async function getAnalytics(): Promise<FillAnalytics> {
+  const res = await timedFetch("/api/analytics", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/analytics returned ${res.status}`);
+  return res.json();
+}
+
+export async function getPaperBalance(): Promise<PaperBalance> {
+  const res = await timedFetch("/api/paper-balance", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/paper-balance returned ${res.status}`);
+  return res.json();
+}
+
+export async function getPaperStats(): Promise<Stats> {
+  const res = await timedFetch("/api/paper-stats", { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/paper-stats returned ${res.status}`);
+  return res.json();
 }
 
 // ─── Market Price / Outcome Derivation ────────────────────────────────────────

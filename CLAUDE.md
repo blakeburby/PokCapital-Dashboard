@@ -79,7 +79,7 @@ tsconfig.json              # strict, bundler resolution, @/* alias
 
 ```bash
 # Required — Railway backend URL
-NEXT_PUBLIC_API_BASE=https://pokcapitalweb-production.up.railway.app
+NEXT_PUBLIC_API_BASE=https://pokcapitalweb-production-82ec.up.railway.app
 ```
 
 `NEXT_PUBLIC_` prefix means this value is embedded in the client bundle. Never store secrets here.
