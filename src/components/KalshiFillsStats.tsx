@@ -123,6 +123,13 @@ function computeEnrichedStats(
     return pnlUSD !== null ? pnlUSD * 100 : 0;
   };
 
+  // H-25: bucket by outcome once and reuse — prevents 'error' from being
+  // silently counted as pending (enrichedFills.length - settled.length)
+  // while simultaneously being rendered as a red loss badge in the table.
+  const errorCount = enrichedFills.filter((f) => {
+    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    return outcome === "error";
+  }).length;
   const settled = enrichedFills.filter((f) => {
     const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     return outcome === "win" || outcome === "loss";
@@ -179,7 +186,8 @@ function computeEnrichedStats(
     worstTradePnl,
     sharpeApprox,
     matchedCount: matched.length,
-    pendingCount: enrichedFills.length - settled.length,
+    pendingCount: enrichedFills.length - settled.length - errorCount,
+    errorCount,
   };
 }
 
@@ -345,7 +353,9 @@ export default function KalshiFillsStats({ hiddenIds }: Props) {
     {
       label: "Settled Trades",
       value: String(stats.settledCount),
-      sub: `${stats.pendingCount} pending`,
+      sub: stats.errorCount > 0
+        ? `${stats.pendingCount} pending, ${stats.errorCount} error`
+        : `${stats.pendingCount} pending`,
       color: "neutral",
     },
   ];

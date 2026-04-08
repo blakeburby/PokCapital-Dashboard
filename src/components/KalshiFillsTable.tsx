@@ -25,7 +25,7 @@ import {
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TimeFilter = "1h" | "1d" | "7d" | "30d" | "all";
-type StatusFilter = "all" | "win" | "loss" | "pending";
+type StatusFilter = "all" | "win" | "loss" | "pending" | "error";
 type ViewMode = "active" | "hidden";
 
 interface EnrichedFill extends KalshiFill {
@@ -52,6 +52,7 @@ const STATUS_FILTERS: { label: string; value: StatusFilter }[] = [
   { label: "Win", value: "win" },
   { label: "Loss", value: "loss" },
   { label: "Pending", value: "pending" },
+  { label: "Error", value: "error" },
 ];
 
 const V = "#8B5CF6";
@@ -81,11 +82,17 @@ function fmtUSD(dollars: number): string {
 // ─── Badge components ─────────────────────────────────────────────────────────
 
 function OutcomeBadge({ outcome }: { outcome: string }) {
+  // H-25: 'error' means Kalshi settlement data is unavailable for a fill
+  // that should be settled by now — it is NOT a loss. Previously error
+  // rendered with the same red badge as an actual loss, so ops couldn't
+  // tell them apart. Give it its own amber/orange styling.
   const cls =
     outcome === "win"
       ? "badge badge-green"
-      : outcome === "loss" || outcome === "error"
+      : outcome === "loss"
       ? "badge badge-red"
+      : outcome === "error"
+      ? "badge badge-amber"
       : "badge badge-yellow";
   return <span className={cls}>{outcome === "error" ? "ERROR" : outcome}</span>;
 }
