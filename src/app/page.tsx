@@ -100,13 +100,81 @@ function formatPriceAge(ms: number | null | undefined): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+function formatTimeToExpiry(isoOrNull: string | null | undefined): string {
+  if (!isoOrNull) return "—";
+  const diffMs = new Date(isoOrNull).getTime() - Date.now();
+  if (!Number.isFinite(diffMs)) return "—";
+  if (diffMs <= 0) return "expired";
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes >= 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+  }
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
 function formatCount(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   return value.toLocaleString("en-US");
 }
 
+function localDayKey(value: string | number | Date): string {
+  return new Date(value).toLocaleDateString("en-CA");
+}
+
+function summarizeFills(fills: KalshiFill[]): FillSummarySnapshot | null {
+  if (fills.length === 0) return null;
+
+  const settledFills = fills.filter(
+    (fill): fill is KalshiFill & { outcome: "win" | "loss" } =>
+      fill.outcome === "win" || fill.outcome === "loss"
+  );
+  const winsCount = settledFills.filter((fill) => fill.outcome === "win").length;
+  const lossesCount = settledFills.filter((fill) => fill.outcome === "loss").length;
+  const estimatedFeeCents = settledFills.reduce((sum, fill) => sum + (fill.fee_cents ?? 0), 0);
+  const netPnlCents = settledFills.reduce(
+    (sum, fill) => sum + (deriveFillNetPnlCents(fill, fill.outcome) ?? 0),
+    0
+  );
+  const timestamps = fills
+    .map((fill) => new Date(fill.created_time).getTime())
+    .filter((value) => Number.isFinite(value));
+
+  return {
+    totalFills: fills.length,
+    settledFills: settledFills.length,
+    pendingFills: fills.length - settledFills.length,
+    winsCount,
+    lossesCount,
+    grossPnlCents: netPnlCents + estimatedFeeCents,
+    estimatedFeeCents,
+    netPnlCents,
+    matchedFills: fills.filter((fill) => !!fill.paper_trade_id).length,
+    firstFillAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null,
+    lastFillAt: timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null,
+  };
+}
+
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
 type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window" | "other";
+type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
+
+interface FillSummarySnapshot {
+  totalFills: number;
+  settledFills: number;
+  pendingFills: number;
+  winsCount: number;
+  lossesCount: number;
+  grossPnlCents: number;
+  estimatedFeeCents: number;
+  netPnlCents: number;
+  matchedFills: number;
+  firstFillAt: string | null;
+  lastFillAt: string | null;
+}
 
 function toneValue(tone: Tone): { color: string; background: string } {
   if (tone === "green") return { color: "#22C55E", background: "rgba(34,197,94,0.12)" };
@@ -140,6 +208,9 @@ function formatBook(worker: BackendStatus["workers"][number]): string {
 
 function formatMarketSource(source: string | null | undefined): string {
   if (!source) return "—";
+  if (source === "kalshi_ws_ticker") return "ws";
+  if (source === "kalshi_rest_detail") return "detail";
+  if (source === "kalshi_rest_orderbook_fp") return "orderbook";
   return source.replace(/^kalshi_/, "").replace(/_/g, " ");
 }
 
@@ -217,6 +288,48 @@ function deriveOperatorState(health: BackendHealth | undefined, status: BackendS
       staleWorkers.length > 0 ? `${staleWorkers.length} worker${staleWorkers.length > 1 ? "s" : ""} on stale spot pricing` : null,
       missingWorkers.length > 0 ? `${missingWorkers.length} worker${missingWorkers.length > 1 ? "s" : ""} missing market or spot data` : null,
     ].filter(Boolean) as string[],
+  };
+}
+
+function deriveOpportunityState(
+  operator: ReturnType<typeof deriveOperatorState>,
+  workers: BackendStatus["workers"],
+  blockerSummary: { counts: Record<BlockerCategory, number>; orderableCount: number; recentlyCommittedCount: number },
+  positionTracker: BackendStatus["positionTracker"] | undefined
+): { label: OpportunityState; tone: Tone; sub: string } {
+  const activePositions = positionTracker?.active ?? 0;
+  const totalWorkers = workers.length;
+
+  if (activePositions > 0) {
+    return {
+      label: "EXECUTING",
+      tone: "green",
+      sub: `${activePositions}/${positionTracker?.max ?? activePositions} active positions`,
+    };
+  }
+
+  if (blockerSummary.recentlyCommittedCount > 0) {
+    return {
+      label: "COMMITTED",
+      tone: "blue",
+      sub: `${blockerSummary.recentlyCommittedCount} worker${blockerSummary.recentlyCommittedCount === 1 ? "" : "s"} with recent committed candidates`,
+    };
+  }
+
+  if (blockerSummary.orderableCount > 0) {
+    return {
+      label: "SCANNING",
+      tone: operator.label === "GO" ? "green" : "blue",
+      sub: `${blockerSummary.orderableCount}/${totalWorkers || 0} workers orderable`,
+    };
+  }
+
+  return {
+    label: "BLOCKED",
+    tone: operator.label === "NO-GO" || blockerSummary.counts.data > 0 ? "red" : "amber",
+    sub: blockerSummary.counts.data > 0
+      ? `${blockerSummary.counts.data} data-blocked worker${blockerSummary.counts.data === 1 ? "" : "s"}`
+      : "No orderable workers right now",
   };
 }
 
@@ -424,6 +537,123 @@ function BreakdownTable({
   );
 }
 
+function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
+  if (workers.length === 0) {
+    return (
+      <div className="panel text-sm text-muted">
+        Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset orderability,
+        book quality, quote age, and the exact blocker on each asset.
+      </div>
+    );
+  }
+
+  return (
+    <div className="panel overflow-hidden">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="section-label" style={{ marginBottom: 4 }}>Worker Matrix</p>
+          <p className="text-sm text-muted">Fast scan of trust, book quality, and trade blockers per asset</p>
+        </div>
+        <HeroSignal label={`${workers.length} workers`} tone="blue" />
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[920px]">
+          <thead>
+            <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+              <th className="py-2 font-medium">Asset</th>
+              <th className="py-2 font-medium">Market</th>
+              <th className="py-2 font-medium">TTE</th>
+              <th className="py-2 font-medium">Spot</th>
+              <th className="py-2 font-medium">Book</th>
+              <th className="py-2 font-medium">Age</th>
+              <th className="py-2 font-medium">Source</th>
+              <th className="py-2 font-medium">EV</th>
+              <th className="py-2 font-medium">Confidence</th>
+              <th className="py-2 font-medium">Blocker</th>
+              <th className="py-2 font-medium">Last commit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {workers.map((worker) => {
+              const blocker = classifyWorkerBlocker(worker);
+              const tone: Tone =
+                blocker === "clear" ? "green" :
+                blocker === "data" ? "red" :
+                blocker === "other" ? "amber" :
+                "blue";
+              const palette = toneValue(tone);
+
+              return (
+                <tr
+                  key={worker.assetKey}
+                  className="border-b align-top"
+                  style={{ borderColor: "rgba(148,163,184,0.08)" }}
+                >
+                  <td className="py-3">
+                    <div className="flex flex-col gap-1">
+                      <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
+                      <div className="flex flex-wrap gap-1">
+                        <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
+                          {worker.hasValidAsk ? "orderable" : "blocked"}
+                        </span>
+                        <span className="badge badge-gray">{worker.enginePhase ?? "idle"}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-3">
+                    <div className="flex flex-col">
+                      <span className="font-mono text-text">{worker.marketTicker ?? "—"}</span>
+                      <span className="text-xs text-muted">
+                        {worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : "never orderable"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-3 font-mono text-muted">{formatTimeToExpiry(worker.marketCloseTime)}</td>
+                  <td className="py-3 font-mono text-text">
+                    {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : "—"}
+                  </td>
+                  <td className="py-3 font-mono text-text">{formatBook(worker)}</td>
+                  <td className="py-3 font-mono" style={{ color: worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000 ? "#EF4444" : "#E2E8F0" }}>
+                    {formatPriceAge(worker.cryptoPriceAgeMs)}
+                  </td>
+                  <td className="py-3">
+                    <span className="badge badge-gray">{formatMarketSource(worker.marketDataSource)}</span>
+                  </td>
+                  <td className="py-3 font-mono text-text">
+                    {worker.currentEV != null ? `${worker.currentEV >= 0 ? "+" : ""}${worker.currentEV.toFixed(1)}c` : "—"}
+                  </td>
+                  <td className="py-3 font-mono text-text">{formatPercent(worker.confidence)}</td>
+                  <td className="py-3">
+                    <div className="flex flex-col gap-1">
+                      <span
+                        className="badge"
+                        style={{ backgroundColor: palette.background, color: palette.color }}
+                      >
+                        {blocker}
+                      </span>
+                      <span className="text-xs text-muted max-w-[18rem]">
+                        {worker.noTradeReason ?? "Entry path clear"}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="py-3">
+                    {worker.lastCommittedCandidateAt ? (
+                      <span className="badge badge-blue">{formatRelativeMoment(worker.lastCommittedCandidateAt)}</span>
+                    ) : (
+                      <span className="text-xs text-muted">never</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
   const rows = useMemo(
     () => [...(fills ?? [])]
@@ -625,45 +855,31 @@ export default function HomePage() {
     () => (fills ?? []).filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase())),
     [fills]
   );
+  const sessionFills = useMemo(
+    () => strategyFills.filter((fill) => localDayKey(fill.created_time) === localDayKey(new Date())),
+    [strategyFills]
+  );
   const fillsSectionSummary = useMemo(() => {
     if (summary) return summary;
-    if (strategyFills.length === 0) return null;
-
-    const settledFills = strategyFills.filter(
-      (fill): fill is KalshiFill & { outcome: "win" | "loss" } =>
-        fill.outcome === "win" || fill.outcome === "loss"
-    );
-    const winsCount = settledFills.filter((fill) => fill.outcome === "win").length;
-    const lossesCount = settledFills.filter((fill) => fill.outcome === "loss").length;
-    const estimatedFeeCents = settledFills.reduce((sum, fill) => sum + (fill.fee_cents ?? 0), 0);
-    const netPnlCents = settledFills.reduce(
-      (sum, fill) => sum + (deriveFillNetPnlCents(fill, fill.outcome) ?? 0),
-      0
-    );
-    const timestamps = strategyFills
-      .map((fill) => new Date(fill.created_time).getTime())
-      .filter((value) => Number.isFinite(value));
-
+    const fallback = summarizeFills(strategyFills);
+    if (!fallback) return null;
     return {
-      totalFills: strategyFills.length,
-      settledFills: settledFills.length,
-      pendingFills: strategyFills.length - settledFills.length,
-      winsCount,
-      lossesCount,
-      grossPnlCents: netPnlCents + estimatedFeeCents,
-      estimatedFeeCents,
-      netPnlCents,
-      matchedFills: strategyFills.filter((fill) => !!fill.paper_trade_id).length,
+      ...fallback,
       fillsFromDb: true,
-      firstFillAt: timestamps.length > 0 ? new Date(Math.min(...timestamps)).toISOString() : null,
-      lastFillAt: timestamps.length > 0 ? new Date(Math.max(...timestamps)).toISOString() : null,
     };
   }, [strategyFills, summary]);
+  const sessionSummary = useMemo(() => summarizeFills(sessionFills), [sessionFills]);
   const fillsMatchRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
     ? fillsSectionSummary.matchedFills / fillsSectionSummary.totalFills
     : null;
   const fillsSettledRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
     ? fillsSectionSummary.settledFills / fillsSectionSummary.totalFills
+    : null;
+  const sessionMatchRate = sessionSummary && sessionSummary.totalFills > 0
+    ? sessionSummary.matchedFills / sessionSummary.totalFills
+    : null;
+  const sessionWinRate = sessionSummary && sessionSummary.settledFills > 0
+    ? sessionSummary.winsCount / sessionSummary.settledFills
     : null;
   const fastestWorkerAge = useMemo(() => {
     const ages = (status?.workers ?? [])
@@ -700,9 +916,22 @@ export default function HomePage() {
 
     return { counts, orderableCount, recentlyCommittedCount };
   }, [workers]);
+  const opportunity = useMemo(
+    () => deriveOpportunityState(operator, workers, blockerSummary, status?.positionTracker),
+    [operator, workers, blockerSummary, status?.positionTracker]
+  );
+  const latestWarning = useMemo(
+    () => (logs?.logs ?? []).slice().reverse().find((line) => {
+      const upper = line.toUpperCase();
+      return upper.includes("REJECT") || upper.includes("INVALID_ORDER") || upper.includes("ERROR") || upper.includes("WARN");
+    }) ?? null,
+    [logs]
+  );
   const settledSample = sampleMeta(fillsSectionSummary?.settledFills, "settled fills");
   const linkedSample = sampleMeta(fillsSectionSummary?.matchedFills, "linked fills");
   const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
+  const sessionSettledSample = sampleMeta(sessionSummary?.settledFills, "session settled fills");
+  const sessionLinkedSample = sampleMeta(sessionSummary?.matchedFills, "session linked fills");
 
   return (
     <main
@@ -725,47 +954,62 @@ export default function HomePage() {
           <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
             <div className="max-w-3xl">
               <div className="flex flex-wrap items-center gap-2 mb-3">
-                <HeroSignal label={`Operator ${operator.label}`} tone={operator.tone} />
+                <HeroSignal label={`System ${operator.label}`} tone={operator.tone} />
+                <HeroSignal label={`Opportunity ${opportunity.label}`} tone={opportunity.tone} />
                 <HeroSignal label={health?.liveTradingEnabled ? "Live trading armed" : "Paper mode"} tone={health?.liveTradingEnabled ? "green" : "amber"} />
                 <HeroSignal label={summary?.fillsFromDb ? "Postgres analytics" : "Fallback analytics"} tone="violet" />
               </div>
               <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-text mb-3">
-                Hybrid backend dashboard for trading operations and real PnL
+                Live operator console for trust, blockers, and execution readiness
               </h1>
               <p className="text-sm md:text-base text-slate-300 max-w-2xl">
-                This view is now anchored to the backend’s own health, worker snapshots, and Postgres-backed fill analytics.
-                It is designed to answer the live question fast: is the engine healthy enough to trust, and how is the ledger actually performing?
+                The first scan is now intentionally operational: can you trust the engine, is anything orderable, what is blocking trade flow,
+                and only then what the ledger says about session and historical performance.
               </p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 min-w-0 xl:min-w-[34rem]">
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 min-w-0 xl:min-w-[52rem]">
               <MetricCard
-                label="Net PnL"
-                value={formatCents(summary?.netPnlCents)}
-                sub="backend analytics"
-                tone={summary != null && summary.netPnlCents < 0 ? "red" : "green"}
-                icon={<TrendingUp size={14} />}
+                label="System Trust"
+                value={operator.label}
+                sub={operator.reasons[0] ?? "backend, workers, and logs are healthy"}
+                tone={operator.tone}
+                icon={<Shield size={14} />}
               />
               <MetricCard
-                label="Live Balance"
-                value={formatCurrency(liveBalance?.balanceDollars)}
-                sub="Kalshi balance"
-                tone="blue"
-                icon={<Wallet size={14} />}
+                label="Opportunity State"
+                value={opportunity.label}
+                sub={opportunity.sub}
+                tone={opportunity.tone}
+                icon={<Target size={14} />}
               />
               <MetricCard
-                label="Matched Fills"
-                value={formatCount(summary?.matchedFills)}
-                sub={`${formatCount(summary?.totalFills)} total fills`}
-                tone="violet"
-                icon={<Database size={14} />}
+                label="Orderable Workers"
+                value={`${blockerSummary.orderableCount}/${workers.length || 0}`}
+                sub={`${blockerSummary.counts.data} data-blocked · ${blockerSummary.counts.ev + blockerSummary.counts.confidence} strategy-gated`}
+                tone={blockerSummary.orderableCount === workers.length && workers.length > 0 ? "green" : "amber"}
+                icon={<Activity size={14} />}
               />
               <MetricCard
-                label="Price Freshness"
+                label="Worst Quote Age"
                 value={formatPriceAge(slowestWorkerAge)}
                 sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
                 tone={slowestWorkerAge != null && slowestWorkerAge > 6_000 ? "red" : "blue"}
                 icon={<Waves size={14} />}
+              />
+              <MetricCard
+                label="Active Positions"
+                value={`${status?.positionTracker.active ?? 0}/${status?.positionTracker.max ?? 0}`}
+                sub={health ? `${health.pendingTrades} pending trades · ${health.settledTrades} settled` : "position tracker"}
+                tone={(status?.positionTracker.active ?? 0) > 0 ? "green" : "blue"}
+                icon={<Wallet size={14} />}
+              />
+              <MetricCard
+                label="Last Fill / Warning"
+                value={fillsSectionSummary?.lastFillAt ? formatRelativeTime(fillsSectionSummary.lastFillAt) : "no fills"}
+                sub={latestWarning ? latestWarning.slice(0, 88) : "no recent warning or reject"}
+                tone={latestWarning ? "amber" : "green"}
+                icon={<AlertTriangle size={14} />}
               />
             </div>
           </div>
@@ -800,8 +1044,8 @@ export default function HomePage() {
         <section className="mb-8">
           <SectionHeading
             kicker="Live Engine"
-            title="Worker readiness and operator gates"
-            subtitle="This strip condenses the current worker state into quick operational signals without hiding the reasons behind a blocked engine."
+            title="Blockers first, worker state second"
+            subtitle="The summary row tells you what class of problem is dominating. The matrix below makes each worker’s orderability, book quality, and blocker visible in one scan."
           />
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mb-4">
             <MetricCard
@@ -847,102 +1091,76 @@ export default function HomePage() {
               icon={<Activity size={14} />}
             />
           </div>
-          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {workers.map((worker) => (
-              <div
-                key={worker.assetKey}
-                className="panel"
-                style={{
-                  background: "linear-gradient(180deg, rgba(15,17,23,0.95), rgba(15,17,23,0.78))",
-                  borderColor:
-                    worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000
-                      ? "rgba(239,68,68,0.24)"
-                      : "rgba(26,31,46,1)",
-                }}
-              >
-                <div className="flex items-start justify-between mb-3">
-                  <div>
-                    <p className="section-label" style={{ marginBottom: 4 }}>{worker.assetKey.toUpperCase()}</p>
-                    <p className="font-mono text-lg text-text font-semibold">
-                      {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : "No spot"}
-                    </p>
-                    <p className="text-xs text-muted truncate">{worker.marketTicker ?? "No market ticker"}</p>
-                  </div>
-                  <div className="flex flex-col gap-2 items-end">
-                    <HeroSignal
-                      label={worker.enginePhase ?? "idle"}
-                      tone={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000 ? "red" : "blue"}
-                    />
-                    <HeroSignal
-                      label={worker.hasValidAsk ? "orderable" : "no ask"}
-                      tone={worker.hasValidAsk ? "green" : "amber"}
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <p className="text-muted">Confidence</p>
-                    <p className="font-mono text-text">{formatPercent(worker.confidence)}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted">EV</p>
-                    <p className="font-mono text-text">
-                      {worker.currentEV != null ? `${worker.currentEV >= 0 ? "+" : ""}${worker.currentEV.toFixed(1)}c` : "—"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted">Book</p>
-                    <p className="font-mono text-text">{formatBook(worker)}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted">Source</p>
-                    <p className="font-mono text-text">{formatMarketSource(worker.marketDataSource)}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted">Regime</p>
-                    <p className="font-mono text-text">{worker.regime ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="text-muted">Price age</p>
-                    <p className="font-mono" style={{ color: worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000 ? "#EF4444" : "#E2E8F0" }}>
-                      {formatPriceAge(worker.cryptoPriceAgeMs)}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {worker.lastOrderableAt ? (
-                    <span className="badge badge-gray">orderable {formatRelativeMoment(worker.lastOrderableAt)}</span>
-                  ) : null}
-                  {worker.lastCommittedCandidateAt ? (
-                    <span className="badge badge-blue">committed {formatRelativeMoment(worker.lastCommittedCandidateAt)}</span>
-                  ) : null}
-                </div>
-                <div className="mt-4 rounded-xl px-3 py-2" style={{ backgroundColor: "rgba(2,6,23,0.42)" }}>
-                  <p className="text-xs text-muted mb-1">No-trade reason</p>
-                  <p className="text-sm text-text">
-                    {worker.noTradeReason ?? "Entry path clear; worker is waiting for a valid committed setup"}
-                  </p>
-                </div>
-              </div>
-            ))}
-            {workers.length === 0 ? (
-              <div className="panel md:col-span-2 xl:col-span-4 text-sm text-muted">
-                Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset readiness and trade blockers.
-              </div>
-            ) : null}
+          <WorkerMatrix workers={workers} />
+        </section>
+
+        <section className="mb-8">
+          <SectionHeading
+            kicker="Session Performance"
+            title="Today’s realized view"
+            subtitle="This row answers the live operational question: what has actually happened in the current session, with sample-size honesty carried into every rate."
+          />
+
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6 mb-4">
+            <MetricCard
+              label="Session Net PnL"
+              value={formatCents(sessionSummary?.netPnlCents)}
+              sub={sessionSummary ? `${formatCount(sessionSummary.settledFills)} settled · ${formatCount(sessionSummary.pendingFills)} pending` : "no fills today"}
+              tone={sessionSummary != null && sessionSummary.netPnlCents < 0 ? "red" : "green"}
+              icon={<TrendingUp size={14} />}
+              badge={sessionSettledSample ? { label: sessionSettledSample.label, tone: sessionSettledSample.tone } : null}
+            />
+            <MetricCard
+              label="Session Win Rate"
+              value={formatPercent(sessionWinRate)}
+              sub={sessionSummary ? `${formatCount(sessionSummary.winsCount)} wins / ${formatCount(sessionSummary.lossesCount)} losses${sessionSettledSample ? ` · ${sessionSettledSample.detail}` : ""}` : "no settled fills today"}
+              tone={sessionWinRate != null && sessionWinRate >= 0.5 ? "green" : "amber"}
+              icon={<Target size={14} />}
+              badge={sessionSettledSample ? { label: sessionSettledSample.label, tone: sessionSettledSample.tone } : null}
+            />
+            <MetricCard
+              label="Session Match Rate"
+              value={formatPercent(sessionMatchRate)}
+              sub={sessionSummary ? `${formatCount(sessionSummary.matchedFills)} of ${formatCount(sessionSummary.totalFills)} fills linked${sessionLinkedSample ? ` · ${sessionLinkedSample.detail}` : ""}` : "no fills today"}
+              tone={sessionMatchRate != null && sessionMatchRate > 0 ? "blue" : "amber"}
+              icon={<Database size={14} />}
+              badge={sessionLinkedSample ? { label: sessionLinkedSample.label, tone: sessionLinkedSample.tone } : null}
+            />
+            <MetricCard
+              label="Session Settled"
+              value={sessionSummary ? `${formatCount(sessionSummary.settledFills)}` : "0"}
+              sub={sessionSummary ? `${formatCount(sessionSummary.totalFills)} total session fills` : "session ledger"}
+              tone="violet"
+              icon={<Activity size={14} />}
+              badge={sessionSettledSample ? { label: sessionSettledSample.label, tone: sessionSettledSample.tone } : null}
+            />
+            <MetricCard
+              label="Live Balance"
+              value={formatCurrency(liveBalance?.balanceDollars)}
+              sub="authoritative Kalshi balance"
+              tone="green"
+              icon={<DollarSign size={14} />}
+            />
+            <MetricCard
+              label="Paper Balance"
+              value={formatCurrency(paperBalance?.balanceDollars)}
+              sub={paperBalance ? `start ${formatCurrency(paperBalance.startingBalanceDollars)}` : "paper ledger"}
+              tone="violet"
+              icon={<Wallet size={14} />}
+            />
           </div>
         </section>
 
         <section className="mb-8">
           <SectionHeading
-            kicker="Performance & Balance"
-            title="Backend-native portfolio view"
-            subtitle="Primary financial metrics now come from `/analytics`, with live and paper balances displayed beside the persisted ledger curve."
+            kicker="Historical Performance"
+            title="Longer-horizon ledger context"
+            subtitle="This section keeps all-time analytics, decomposition, and balance history together so historical context doesn’t compete with live session decisioning."
           />
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-4">
             <MetricCard
-              label="Win Rate"
+              label="Historical Win Rate"
               value={formatPercent(summary?.winRate)}
               sub={`${formatCount(summary?.winsCount)} wins / ${formatCount(summary?.lossesCount)} losses${settledSample ? ` · ${settledSample.detail}` : ""}`}
               tone={summary != null && (summary.winRate ?? 0) >= 0.5 ? "green" : "amber"}
@@ -952,7 +1170,7 @@ export default function HomePage() {
             <MetricCard
               label="Avg EV"
               value={summary?.avgEvCents != null ? `${summary.avgEvCents >= 0 ? "+" : ""}${summary.avgEvCents.toFixed(1)}c` : "—"}
-              sub={`matched fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
+              sub={`linked fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
               tone="violet"
               icon={<Sparkles size={14} />}
               badge={linkedSample ? { label: linkedSample.label, tone: linkedSample.tone } : null}
@@ -960,7 +1178,7 @@ export default function HomePage() {
             <MetricCard
               label="Avg Confidence"
               value={formatPercent(summary?.avgConfidence)}
-              sub={`matched fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
+              sub={`linked fills only${linkedSample ? ` · ${linkedSample.detail}` : ""}`}
               tone="blue"
               icon={<Shield size={14} />}
               badge={linkedSample ? { label: linkedSample.label, tone: linkedSample.tone } : null}
@@ -989,18 +1207,18 @@ export default function HomePage() {
 
             <div className="grid gap-4">
               <MetricCard
-                label="Live Balance"
-                value={formatCurrency(liveBalance?.balanceDollars)}
-                sub="authoritative Kalshi balance"
-                tone="green"
-                icon={<DollarSign size={14} />}
+                label="Historical Net PnL"
+                value={formatCents(summary?.netPnlCents)}
+                sub="backend analytics"
+                tone={summary != null && summary.netPnlCents < 0 ? "red" : "green"}
+                icon={<TrendingUp size={14} />}
               />
               <MetricCard
-                label="Paper Balance"
-                value={formatCurrency(paperBalance?.balanceDollars)}
-                sub={paperBalance ? `start ${formatCurrency(paperBalance.startingBalanceDollars)}` : "paper ledger"}
-                tone="violet"
-                icon={<Wallet size={14} />}
+                label="Capital Tracked"
+                value={summary ? formatCurrency(summary.totalCapitalUSD) : "—"}
+                sub="notional fill capital"
+                tone="amber"
+                icon={<Database size={14} />}
               />
               <MetricCard
                 label="Paper Win Rate"
@@ -1010,10 +1228,10 @@ export default function HomePage() {
                 icon={<Activity size={14} />}
               />
               <MetricCard
-                label="Capital Tracked"
-                value={summary ? formatCurrency(summary.totalCapitalUSD) : "—"}
-                sub="notional fill capital"
-                tone="amber"
+                label="Latest Ledger Fill"
+                value={summary?.lastFillAt ? formatRelativeTime(summary.lastFillAt) : "never"}
+                sub={summary?.firstFillAt ? `first ${formatShortTimestamp(summary.firstFillAt)}` : "ledger timeline"}
+                tone="violet"
                 icon={<Database size={14} />}
               />
             </div>

@@ -72,6 +72,9 @@ function formatBook(worker: WorkerSnapshot): string {
 
 function formatMarketSource(source: string | null | undefined): string {
   if (!source) return "—";
+  if (source === "kalshi_ws_ticker") return "ws";
+  if (source === "kalshi_rest_detail") return "detail";
+  if (source === "kalshi_rest_orderbook_fp") return "orderbook";
   return source.replace(/^kalshi_/, "").replace(/_/g, " ");
 }
 
