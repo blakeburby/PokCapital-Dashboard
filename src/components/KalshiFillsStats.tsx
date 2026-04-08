@@ -2,7 +2,17 @@
 
 import useSWR from "swr";
 import { useMemo } from "react";
-import { getFills, getTrades, getMarketPrice, deriveOutcome, derivePnlUSD, type KalshiFill, type Trade, type KalshiMarketPrice } from "@/lib/api";
+import {
+  getFills,
+  getTrades,
+  getMarketPrice,
+  deriveOutcome,
+  derivePnlUSD,
+  getFillPriceCents,
+  type KalshiFill,
+  type Trade,
+  type KalshiMarketPrice,
+} from "@/lib/api";
 import {
   Activity,
   TrendingUp,
@@ -98,7 +108,7 @@ export function buildEnrichedFills(fills: KalshiFill[], trades: Trade[]): Enrich
       .map((t) => [t.orderId, t])
   );
   return fills.map((fill): EnrichedFill => {
-    const fillPrice = fill.side === "yes" ? fill.yes_price : fill.no_price;
+    const fillPrice = getFillPriceCents(fill);
     const pt = byOrderId.get(fill.order_id) ?? null;
     return {
       ...fill,
@@ -118,8 +128,8 @@ function computeEnrichedStats(
 
   // Derive outcome and PnL from Kalshi's authoritative result
   const pnlCentsForFill = (f: EnrichedFill): number => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
-    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, outcome);
+    const outcome = deriveOutcome(f.action, f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    const pnlUSD = derivePnlUSD(f.fillPrice, f.count, f.action, outcome, f.fee_cents ?? 0);
     return pnlUSD !== null ? pnlUSD * 100 : 0;
   };
 
@@ -127,15 +137,15 @@ function computeEnrichedStats(
   // silently counted as pending (enrichedFills.length - settled.length)
   // while simultaneously being rendered as a red loss badge in the table.
   const errorCount = enrichedFills.filter((f) => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    const outcome = deriveOutcome(f.action, f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     return outcome === "error";
   }).length;
   const settled = enrichedFills.filter((f) => {
-    const outcome = deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
+    const outcome = deriveOutcome(f.action, f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome);
     return outcome === "win" || outcome === "loss";
   });
   const wins = settled.filter((f) =>
-    deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "win"
+    deriveOutcome(f.action, f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "win"
   );
   const lossesCount = settled.length - wins.length;
 
@@ -157,7 +167,7 @@ function computeEnrichedStats(
   const grossWinsCents = wins.reduce((s, f) => s + pnlCentsForFill(f), 0);
   const grossLossesCents = Math.abs(
     settled
-      .filter((f) => deriveOutcome(f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
+      .filter((f) => deriveOutcome(f.action, f.side, f.created_time, marketPrices.get(f.ticker), f.paperTrade?.outcome) === "loss")
       .reduce((s, f) => s + pnlCentsForFill(f), 0)
   );
   const profitFactor =

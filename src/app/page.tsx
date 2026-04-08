@@ -29,8 +29,10 @@ import {
 import BackendStatusPanel from "@/components/BackendStatusPanel";
 import RealAccountChart from "@/components/RealAccountChart";
 import {
+  deriveFillNetPnlCents,
   getAnalytics,
   getBalance,
+  getFillPriceCents,
   getFills,
   getHealth,
   getLogs,
@@ -49,6 +51,7 @@ import {
 } from "@/lib/api";
 
 const REFRESH_MS = 10_000;
+const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
 
 function formatCurrency(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -115,11 +118,6 @@ function assetFromFill(fill: KalshiFill): string {
   if (fill.asset) return fill.asset;
   const match = fill.ticker.match(/^KX([A-Z]+)\d/);
   return match ? match[1] : fill.ticker.split("-")[0];
-}
-
-function fillPrice(fill: KalshiFill): number {
-  if (fill.fill_price != null) return fill.fill_price;
-  return String(fill.side).toLowerCase() === "yes" ? fill.yes_price : fill.no_price;
 }
 
 function deriveOperatorState(health: BackendHealth | undefined, status: BackendStatus | null | undefined) {
@@ -354,6 +352,7 @@ function BreakdownTable({
 function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
   const rows = useMemo(
     () => [...(fills ?? [])]
+      .filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()))
       .sort((a, b) => new Date(b.created_time).getTime() - new Date(a.created_time).getTime())
       .slice(0, 10),
     [fills]
@@ -364,9 +363,9 @@ function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
       <div className="flex items-center justify-between mb-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Recent Fills</p>
-          <p className="text-sm text-muted">Persisted ledger rows from the backend fill store</p>
+          <p className="text-sm text-muted">Strategy ledger rows, with trade profit/loss derived from stored fill economics and settlement outcome</p>
         </div>
-        <HeroSignal label={`${rows.length} shown`} tone="violet" />
+        <HeroSignal label={`${rows.length} strategy fills`} tone="violet" />
       </div>
 
       {rows.length === 0 ? (
@@ -390,7 +389,9 @@ function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
             <tbody>
               {rows.map((fill) => {
                 const outcome = fill.outcome ?? null;
-                const netPnl = fill.pnl_net_cents ?? null;
+                const netPnl = outcome
+                  ? deriveFillNetPnlCents(fill, outcome)
+                  : fill.pnl_net_cents ?? null;
                 return (
                   <tr key={fill.trade_id} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
                     <td className="py-2 text-muted">{formatShortTimestamp(fill.created_time)}</td>
@@ -406,7 +407,7 @@ function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
                       </span>
                     </td>
                     <td className="py-2 font-mono text-muted">{formatCount(fill.count)}</td>
-                    <td className="py-2 font-mono text-text">{fillPrice(fill)}c</td>
+                    <td className="py-2 font-mono text-text">{getFillPriceCents(fill)}c</td>
                     <td className="py-2 font-mono text-muted">
                       {fill.fee_cents != null ? `${fill.fee_cents}c` : "—"}
                     </td>
@@ -545,6 +546,12 @@ export default function HomePage() {
 
   const operator = useMemo(() => deriveOperatorState(health, status), [health, status]);
   const summary = analytics?.summary;
+  const matchRate = summary && summary.totalFills > 0
+    ? summary.matchedFills / summary.totalFills
+    : null;
+  const settledRate = summary && summary.totalFills > 0
+    ? summary.settledFills / summary.totalFills
+    : null;
   const fastestWorkerAge = useMemo(() => {
     const ages = (status?.workers ?? [])
       .map((worker) => worker.cryptoPriceAgeMs)
@@ -827,34 +834,47 @@ export default function HomePage() {
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-4">
             <MetricCard
-              label="Total Fills"
-              value={formatCount(summary?.totalFills)}
-              sub={summary ? `${summary.pendingFills} pending / ${summary.settledFills} settled` : "fill ledger"}
-              tone="violet"
+              label="Net PnL"
+              value={formatCents(summary?.netPnlCents)}
+              sub={summary ? `${formatCents(summary.grossPnlCents)} gross less ${formatCents(summary.estimatedFeeCents)} fees` : "settled ledger PnL"}
+              tone={summary != null && summary.netPnlCents < 0 ? "red" : "green"}
+              icon={<TrendingUp size={14} />}
+            />
+            <MetricCard
+              label="Match Rate"
+              value={formatPercent(matchRate)}
+              sub={summary ? `${formatCount(summary.matchedFills)} of ${formatCount(summary.totalFills)} fills linked to trades` : "trade linkage"}
+              tone={matchRate != null && matchRate > 0 ? "blue" : "amber"}
               icon={<Database size={14} />}
             />
             <MetricCard
-              label="Fees"
-              value={formatCents(summary?.estimatedFeeCents)}
-              sub="estimated from fills"
-              tone="amber"
-              icon={<DollarSign size={14} />}
+              label="Settlement Trail"
+              value={summary ? `${formatCount(summary.settledFills)} settled` : "—"}
+              sub={summary ? `${formatCount(summary.winsCount)} wins / ${formatCount(summary.lossesCount)} losses · ${formatPercent(settledRate)} settled` : "reconciliation status"}
+              tone={summary != null && summary.pendingFills > 0 ? "amber" : "green"}
+              icon={<Activity size={14} />}
             />
             <MetricCard
               label="Ledger Source"
               value={summary?.fillsFromDb ? "Postgres" : "Fallback"}
-              sub={summary?.lastFillAt ? `last fill ${formatRelativeTime(summary.lastFillAt)}` : "awaiting fills"}
+              sub={
+                summary?.lastFillAt
+                  ? `${formatRelativeTime(summary.lastFillAt)} latest · ${summary.firstFillAt ? `first ${formatShortTimestamp(summary.firstFillAt)}` : "no first fill"}`
+                  : "awaiting fills"
+              }
               tone={summary?.fillsFromDb ? "green" : "amber"}
               icon={<Shield size={14} />}
             />
-            <MetricCard
-              label="First / Last Fill"
-              value={summary?.firstFillAt ? formatShortTimestamp(summary.firstFillAt) : "—"}
-              sub={summary?.lastFillAt ? `latest ${formatShortTimestamp(summary.lastFillAt)}` : "no fill timestamps"}
-              tone="blue"
-              icon={<Activity size={14} />}
-            />
           </div>
+
+          {summary != null && summary.matchedFills === 0 ? (
+            <div
+              className="panel mb-4 text-sm text-muted"
+              style={{ background: "linear-gradient(180deg, rgba(15,17,23,0.95), rgba(15,17,23,0.78))" }}
+            >
+              Match rate is currently zero because the backend has no linked trade rows for these fills yet. The ledger PnL above is still based on settled fill economics, not browser-side guesswork.
+            </div>
+          ) : null}
 
           <RecentFillsPanel fills={fills} />
         </section>

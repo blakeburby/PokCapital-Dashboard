@@ -79,6 +79,13 @@ export interface KalshiFill {
   pnl_net_cents?: number | null;
 }
 
+export function getFillPriceCents(
+  fill: Pick<KalshiFill, "fill_price" | "side" | "yes_price" | "no_price">
+): number {
+  if (fill.fill_price != null) return fill.fill_price;
+  return fill.side === "yes" ? fill.yes_price : fill.no_price;
+}
+
 // ─── Kalshi Market Price ──────────────────────────────────────────────────────
 
 export interface KalshiMarketPrice {
@@ -376,6 +383,7 @@ export async function getMarketPrice(ticker: string): Promise<KalshiMarketPrice 
  * Returns "error" when the market should be settled but Kalshi data is unavailable.
  */
 export function deriveOutcome(
+  action: "buy" | "sell" | string,
   side: "yes" | "no",
   createdTime: string,
   mp: KalshiMarketPrice | undefined,
@@ -387,22 +395,63 @@ export function deriveOutcome(
     return ageMs > 20 * 60_000 ? "error" : "pending";
   }
   if (mp.status === "determined" && mp.result) {
-    return side === mp.result ? "win" : "loss";
+    const sideWon = side === mp.result;
+    if (action === "sell") return sideWon ? "loss" : "win";
+    return sideWon ? "win" : "loss";
   }
   return "pending";
 }
 
 /**
- * Calculate actual PnL in USD from fill price and Kalshi-derived outcome.
+ * Calculate actual net PnL in cents from fill price and Kalshi-derived outcome.
+ * Returns null for pending or error outcomes.
+ */
+export function derivePnlCents(
+  fillPrice: number,
+  count: number,
+  action: "buy" | "sell" | string,
+  outcome: "win" | "loss" | "pending" | "error",
+  feeCents = 0
+): number | null {
+  if (outcome === "pending" || outcome === "error") return null;
+  const gross =
+    action === "sell"
+      ? outcome === "win"
+        ? fillPrice * count
+        : -(100 - fillPrice) * count
+      : outcome === "win"
+        ? (100 - fillPrice) * count
+        : -fillPrice * count;
+  return gross - feeCents;
+}
+
+/**
+ * Calculate actual net PnL in USD from fill price and Kalshi-derived outcome.
  * Returns null for pending or error outcomes.
  */
 export function derivePnlUSD(
   fillPrice: number,
   count: number,
-  outcome: "win" | "loss" | "pending" | "error"
+  action: "buy" | "sell" | string,
+  outcome: "win" | "loss" | "pending" | "error",
+  feeCents = 0
 ): number | null {
-  if (outcome === "pending" || outcome === "error") return null;
-  return ((outcome === "win" ? 100 : 0) - fillPrice) * count / 100;
+  const pnlCents = derivePnlCents(fillPrice, count, action, outcome, feeCents);
+  return pnlCents != null ? pnlCents / 100 : null;
+}
+
+export function deriveFillNetPnlCents(
+  fill: Pick<KalshiFill, "action" | "count" | "fee_cents" | "fill_price" | "side" | "yes_price" | "no_price">,
+  outcome: "win" | "loss" | "pending" | "error" | null | undefined
+): number | null {
+  if (!outcome) return null;
+  return derivePnlCents(
+    getFillPriceCents(fill),
+    fill.count,
+    fill.action,
+    outcome,
+    fill.fee_cents ?? 0
+  );
 }
 
 // ─── Engine State (Modified Black-Scholes backend) ──────────────────────────
