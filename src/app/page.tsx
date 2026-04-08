@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Bar,
@@ -161,6 +161,8 @@ function summarizeFills(fills: KalshiFill[]): FillSummarySnapshot | null {
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
 type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window" | "other";
 type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
+type OpsWindow = "15m" | "1h" | "24h";
+type LedgerWindow = "today" | "7d" | "all";
 
 interface FillSummarySnapshot {
   totalFills: number;
@@ -333,14 +335,56 @@ function deriveOpportunityState(
   };
 }
 
+function extractTimestamp(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const direct = new Date(value).getTime();
+  if (Number.isFinite(direct)) return direct;
+  const match = value.match(/\[(\d{4}-\d{2}-\d{2}T[^\]]+)\]/);
+  if (!match) return null;
+  const parsed = new Date(match[1]).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function windowMs(window: OpsWindow): number {
+  if (window === "15m") return 15 * 60_000;
+  if (window === "1h") return 60 * 60_000;
+  return 24 * 60 * 60_000;
+}
+
+function inOpsWindow(value: string | null | undefined, window: OpsWindow): boolean {
+  const ts = extractTimestamp(value);
+  if (ts == null) return false;
+  return Date.now() - ts <= windowMs(window);
+}
+
+function inLedgerWindow(value: string, window: LedgerWindow): boolean {
+  const ts = new Date(value).getTime();
+  if (!Number.isFinite(ts)) return false;
+  if (window === "all") return true;
+  if (window === "today") return localDayKey(ts) === localDayKey(Date.now());
+  return Date.now() - ts <= 7 * 24 * 60 * 60_000;
+}
+
+function countMatches(lines: string[], matcher: RegExp): number {
+  return lines.filter((line) => matcher.test(line)).length;
+}
+
+function isOneSidedBook(worker: BackendStatus["workers"][number]): boolean {
+  const asks = [worker.marketYesAskCents, worker.marketNoAskCents];
+  const bids = [worker.marketYesBidCents, worker.marketNoBidCents];
+  return asks.some((value) => value != null && value >= 99) || bids.some((value) => value != null && value <= 1);
+}
+
 function SectionHeading({
   kicker,
   title,
   subtitle,
+  actions,
 }: {
   kicker: string;
   title: string;
   subtitle: string;
+  actions?: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1 mb-4">
@@ -350,6 +394,7 @@ function SectionHeading({
           <h2 className="text-xl font-semibold text-text">{title}</h2>
           <p className="text-sm text-muted max-w-3xl">{subtitle}</p>
         </div>
+        {actions ? <div className="mt-3 lg:mt-0">{actions}</div> : null}
       </div>
     </div>
   );
@@ -410,6 +455,40 @@ function HeroSignal({
     >
       {label}
     </span>
+  );
+}
+
+function FilterChipBar<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: Array<{ value: T; label: string }>;
+}) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => onChange(option.value)}
+            className="badge transition-colors"
+            style={{
+              backgroundColor: active ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+              color: active ? "#38BDF8" : "#94A3B8",
+              border: `1px solid ${active ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+              cursor: "pointer",
+            }}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -654,7 +733,75 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
   );
 }
 
-function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
+function ExecutionFunnel({
+  funnel,
+  windowLabel,
+}: {
+  funnel: Array<{ label: string; value: number; tone: Tone; sub: string }>;
+  windowLabel: string;
+}) {
+  return (
+    <div className="panel">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="section-label" style={{ marginBottom: 4 }}>Execution Funnel</p>
+          <p className="text-sm text-muted">Where opportunity is being lost from orderable state through settled fills</p>
+        </div>
+        <HeroSignal label={windowLabel} tone="blue" />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
+        {funnel.map((step) => (
+          <MetricCard
+            key={step.label}
+            label={step.label}
+            value={formatCount(step.value)}
+            sub={step.sub}
+            tone={step.tone}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AnomalySummary({
+  anomalies,
+  windowLabel,
+}: {
+  anomalies: Array<{ label: string; value: number; tone: Tone; sub: string }>;
+  windowLabel: string;
+}) {
+  return (
+    <div className="panel">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <p className="section-label" style={{ marginBottom: 4 }}>Active Anomalies</p>
+          <p className="text-sm text-muted">Compressed operator warnings so the raw log tails can stay secondary</p>
+        </div>
+        <HeroSignal label={windowLabel} tone="amber" />
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {anomalies.map((item) => (
+          <MetricCard
+            key={item.label}
+            label={item.label}
+            value={formatCount(item.value)}
+            sub={item.sub}
+            tone={item.tone}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecentFillsPanel({
+  fills,
+  windowLabel,
+}: {
+  fills: KalshiFill[] | undefined;
+  windowLabel: string;
+}) {
   const rows = useMemo(
     () => [...(fills ?? [])]
       .filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()))
@@ -670,7 +817,7 @@ function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
           <p className="section-label" style={{ marginBottom: 4 }}>Recent Fills</p>
           <p className="text-sm text-muted">Strategy ledger rows, with trade profit/loss derived from stored fill economics and settlement outcome</p>
         </div>
-        <HeroSignal label={`${rows.length} strategy fills`} tone="violet" />
+        <HeroSignal label={`${rows.length} fills · ${windowLabel}`} tone="violet" />
       </div>
 
       {rows.length === 0 ? (
@@ -745,14 +892,16 @@ function RecentFillsPanel({ fills }: { fills: KalshiFill[] | undefined }) {
 }
 
 function RecentEventsRail({
-  status,
+  events,
   logs,
+  windowLabel,
 }: {
-  status: BackendStatus | null | undefined;
-  logs: LogsResponse | undefined;
+  events: string[];
+  logs: string[];
+  windowLabel: string;
 }) {
   const warningLogs = useMemo(
-    () => (logs?.logs ?? [])
+    () => (logs ?? [])
       .filter((line) => {
         const upper = line.toUpperCase();
         return upper.includes("ERROR") || upper.includes("WARN") || upper.includes("TRADE BLOCKED") || upper.includes("TRADE SKIPPED");
@@ -770,10 +919,10 @@ function RecentEventsRail({
             <p className="section-label" style={{ marginBottom: 4 }}>Engine Event Tail</p>
             <p className="text-sm text-muted">Recent trade, fill, and reconciliation activity from `/status`</p>
           </div>
-          <HeroSignal label={`${status?.recentEvents.length ?? 0} events`} tone="blue" />
+          <HeroSignal label={`${events.length} events · ${windowLabel}`} tone="blue" />
         </div>
         <div className="space-y-2">
-          {(status?.recentEvents ?? []).slice(-10).reverse().map((event, index) => (
+          {events.slice(-10).reverse().map((event, index) => (
             <div
               key={`${event}-${index}`}
               className="rounded-xl px-3 py-2 text-xs font-mono"
@@ -782,7 +931,7 @@ function RecentEventsRail({
               {event}
             </div>
           ))}
-          {(status?.recentEvents.length ?? 0) === 0 ? (
+          {events.length === 0 ? (
             <div className="text-sm text-muted">No recent engine events yet.</div>
           ) : null}
         </div>
@@ -794,7 +943,7 @@ function RecentEventsRail({
             <p className="section-label" style={{ marginBottom: 4 }}>Warning Tail</p>
             <p className="text-sm text-muted">Recent warnings and blocked trades from `/logs`</p>
           </div>
-          <HeroSignal label={logs?.meta.lastTimestamp ? formatRelativeTime(logs.meta.lastTimestamp) : "no logs"} tone="amber" />
+          <HeroSignal label={warningLogs.length > 0 ? windowLabel : "no logs"} tone="amber" />
         </div>
         <div className="space-y-2">
           {warningLogs.map((line, index) => (
@@ -816,6 +965,9 @@ function RecentEventsRail({
 }
 
 export default function HomePage() {
+  const [opsWindow, setOpsWindow] = useState<OpsWindow>("15m");
+  const [ledgerWindow, setLedgerWindow] = useState<LedgerWindow>("today");
+
   const { data: health } = useSWR<BackendHealth>("backend-health", getHealth, {
     refreshInterval: REFRESH_MS,
     revalidateOnFocus: false,
@@ -855,19 +1007,35 @@ export default function HomePage() {
     () => (fills ?? []).filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase())),
     [fills]
   );
+  const ledgerFills = useMemo(
+    () => strategyFills.filter((fill) => inLedgerWindow(fill.created_time, ledgerWindow)),
+    [strategyFills, ledgerWindow]
+  );
   const sessionFills = useMemo(
     () => strategyFills.filter((fill) => localDayKey(fill.created_time) === localDayKey(new Date())),
     [strategyFills]
   );
+  const opsFills = useMemo(
+    () => strategyFills.filter((fill) => inOpsWindow(fill.created_time, opsWindow)),
+    [strategyFills, opsWindow]
+  );
+  const opsRecentEvents = useMemo(
+    () => (status?.recentEvents ?? []).filter((event) => inOpsWindow(event, opsWindow)),
+    [status?.recentEvents, opsWindow]
+  );
+  const opsLogLines = useMemo(
+    () => (logs?.logs ?? []).filter((line) => inOpsWindow(line, opsWindow)),
+    [logs?.logs, opsWindow]
+  );
   const fillsSectionSummary = useMemo(() => {
-    if (summary) return summary;
-    const fallback = summarizeFills(strategyFills);
+    if (ledgerWindow === "all" && summary) return summary;
+    const fallback = summarizeFills(ledgerFills);
     if (!fallback) return null;
     return {
       ...fallback,
       fillsFromDb: true,
     };
-  }, [strategyFills, summary]);
+  }, [ledgerFills, ledgerWindow, summary]);
   const sessionSummary = useMemo(() => summarizeFills(sessionFills), [sessionFills]);
   const fillsMatchRate = fillsSectionSummary && fillsSectionSummary.totalFills > 0
     ? fillsSectionSummary.matchedFills / fillsSectionSummary.totalFills
@@ -916,6 +1084,46 @@ export default function HomePage() {
 
     return { counts, orderableCount, recentlyCommittedCount };
   }, [workers]);
+  const executionFunnel = useMemo(() => {
+    const candidateCount = workers.filter((worker) => worker.candidateDirection != null).length;
+    const committedCount = workers.filter((worker) =>
+      worker.lastCommittedCandidateAt != null &&
+      inOpsWindow(String(worker.lastCommittedCandidateAt), opsWindow)
+    ).length;
+    const submittedCount =
+      countMatches(opsRecentEvents, /submitting live order|order request submitted/i) +
+      countMatches(opsLogLines, /submitting live order|order request submitted/i);
+    const acceptedCount =
+      countMatches(opsRecentEvents, /live order accepted|order accepted/i) +
+      countMatches(opsLogLines, /live order accepted|order accepted/i);
+
+    return [
+      { label: "Orderable", value: blockerSummary.orderableCount, tone: blockerSummary.orderableCount > 0 ? "green" : "amber", sub: "workers with valid asks" },
+      { label: "Candidate", value: candidateCount, tone: candidateCount > 0 ? "blue" : "amber", sub: "workers with a candidate side" },
+      { label: "Committed", value: committedCount, tone: committedCount > 0 ? "green" : "blue", sub: "recent committed candidates" },
+      { label: "Submitted", value: submittedCount, tone: submittedCount > 0 ? "green" : "blue", sub: "live submissions seen in logs" },
+      { label: "Accepted", value: acceptedCount, tone: acceptedCount > 0 ? "green" : "blue", sub: "live accepts in logs" },
+      { label: "Filled", value: opsFills.length, tone: opsFills.length > 0 ? "green" : "blue", sub: "fills created in window" },
+      { label: "Matched", value: opsFills.filter((fill) => !!fill.paper_trade_id).length, tone: opsFills.some((fill) => !!fill.paper_trade_id) ? "green" : "amber", sub: "fills linked to trades" },
+      { label: "Settled", value: opsFills.filter((fill) => fill.outcome === "win" || fill.outcome === "loss").length, tone: opsFills.some((fill) => fill.outcome === "win" || fill.outcome === "loss") ? "green" : "blue", sub: "resolved fills in window" },
+    ];
+  }, [workers, blockerSummary.orderableCount, opsRecentEvents, opsLogLines, opsFills, opsWindow]);
+  const anomalySummary = useMemo(() => {
+    const rejectedOrders = countMatches(opsRecentEvents, /rejected|invalid_order/i) + countMatches(opsLogLines, /rejected|invalid_order/i);
+    const dataWarnings = countMatches(opsRecentEvents, /market_data_unavailable|top[- ]of[- ]book|missing ask|crypto_unavailable/i)
+      + countMatches(opsLogLines, /market_data_unavailable|top[- ]of[- ]book|missing ask|crypto_unavailable/i);
+    const reconciliationWarnings = countMatches(opsRecentEvents, /reconcil/i) + countMatches(opsLogLines, /reconcil/i);
+    const oneSidedBooks = workers.filter(isOneSidedBook).length;
+
+    return [
+      { label: "Stale Quotes", value: workers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > 6_000).length, tone: workers.some((worker) => (worker.cryptoPriceAgeMs ?? 0) > 6_000) ? "red" : "green", sub: "workers above 6s quote age" },
+      { label: "Rejected Orders", value: rejectedOrders, tone: rejectedOrders > 0 ? "red" : "green", sub: "recent accepts vs rejects risk" },
+      { label: "Data Warnings", value: dataWarnings, tone: dataWarnings > 0 ? "amber" : "green", sub: "crypto or market-data incidents" },
+      { label: "One-sided Books", value: oneSidedBooks, tone: oneSidedBooks > 0 ? "amber" : "green", sub: "extreme top-of-book structure" },
+      { label: "Fallback Sources", value: workers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker").length, tone: workers.some((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker") ? "amber" : "green", sub: "workers not on ws ticker" },
+      { label: "Reconciliation", value: reconciliationWarnings, tone: reconciliationWarnings > 0 ? "amber" : "green", sub: "recent reconcile mentions" },
+    ];
+  }, [opsRecentEvents, opsLogLines, workers]);
   const opportunity = useMemo(
     () => deriveOpportunityState(operator, workers, blockerSummary, status?.positionTracker),
     [operator, workers, blockerSummary, status?.positionTracker]
@@ -932,6 +1140,8 @@ export default function HomePage() {
   const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
   const sessionSettledSample = sampleMeta(sessionSummary?.settledFills, "session settled fills");
   const sessionLinkedSample = sampleMeta(sessionSummary?.matchedFills, "session linked fills");
+  const opsWindowLabel = opsWindow === "15m" ? "Last 15m" : opsWindow === "1h" ? "Last 1h" : "Last 24h";
+  const ledgerWindowLabel = ledgerWindow === "today" ? "Today" : ledgerWindow === "7d" ? "Last 7d" : "All time";
 
   return (
     <main
@@ -1035,10 +1245,10 @@ export default function HomePage() {
         <section className="mb-8">
           <SectionHeading
             kicker="System Health"
-            title="Explicit go/no-go visibility"
-            subtitle="Backend reachability, worker status, heartbeat freshness, latency, and crypto price age all surface here first."
+            title="Trust-critical backend view"
+            subtitle="This section now stays focused on the trust question: connectivity, freshness, readiness timing, and active health exceptions."
           />
-          <BackendStatusPanel />
+          <BackendStatusPanel health={health} status={status} />
         </section>
 
         <section className="mb-8">
@@ -1046,6 +1256,17 @@ export default function HomePage() {
             kicker="Live Engine"
             title="Blockers first, worker state second"
             subtitle="The summary row tells you what class of problem is dominating. The matrix below makes each worker’s orderability, book quality, and blocker visible in one scan."
+            actions={
+              <FilterChipBar
+                value={opsWindow}
+                onChange={setOpsWindow}
+                options={[
+                  { value: "15m", label: "Last 15m" },
+                  { value: "1h", label: "Last 1h" },
+                  { value: "24h", label: "Last 24h" },
+                ]}
+              />
+            }
           />
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mb-4">
             <MetricCard
@@ -1090,6 +1311,10 @@ export default function HomePage() {
               tone={blockerSummary.recentlyCommittedCount > 0 ? "green" : "blue"}
               icon={<Activity size={14} />}
             />
+          </div>
+          <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr] mb-4">
+            <ExecutionFunnel funnel={executionFunnel} windowLabel={opsWindowLabel} />
+            <AnomalySummary anomalies={anomalySummary} windowLabel={opsWindowLabel} />
           </div>
           <WorkerMatrix workers={workers} />
         </section>
@@ -1255,6 +1480,17 @@ export default function HomePage() {
             kicker="Fills & Reconciliation"
             title="Persisted ledger, match rate, and settlement trail"
             subtitle="The fills section stays grounded in the stored fill ledger and the backend’s own reconciliation status rather than browser-side reconstruction."
+            actions={
+              <FilterChipBar
+                value={ledgerWindow}
+                onChange={setLedgerWindow}
+                options={[
+                  { value: "today", label: "Today" },
+                  { value: "7d", label: "Last 7d" },
+                  { value: "all", label: "All time" },
+                ]}
+              />
+            }
           />
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-4">
@@ -1286,7 +1522,7 @@ export default function HomePage() {
               value={fillsSectionSummary?.fillsFromDb ? "Postgres" : "Fallback"}
               sub={
                 fillsSectionSummary?.lastFillAt
-                  ? `${formatRelativeTime(fillsSectionSummary.lastFillAt)} latest · ${fillsSectionSummary.firstFillAt ? `first ${formatShortTimestamp(fillsSectionSummary.firstFillAt)}` : "no first fill"}`
+                  ? `${ledgerWindowLabel} · ${formatRelativeTime(fillsSectionSummary.lastFillAt)} latest${fillsSectionSummary.firstFillAt ? ` · first ${formatShortTimestamp(fillsSectionSummary.firstFillAt)}` : ""}`
                   : "awaiting fills"
               }
               tone={fillsSectionSummary?.fillsFromDb ? "green" : "amber"}
@@ -1303,7 +1539,7 @@ export default function HomePage() {
             </div>
           ) : null}
 
-          <RecentFillsPanel fills={fills} />
+          <RecentFillsPanel fills={ledgerFills} windowLabel={ledgerWindowLabel} />
         </section>
 
         <section>
@@ -1311,8 +1547,19 @@ export default function HomePage() {
             kicker="Recent Events"
             title="Operational tail for fast diagnosis"
             subtitle="Recent engine events from `/status` sit next to the warning tail from `/logs` so operator issues are visible without opening a second screen."
+            actions={
+              <FilterChipBar
+                value={opsWindow}
+                onChange={setOpsWindow}
+                options={[
+                  { value: "15m", label: "Last 15m" },
+                  { value: "1h", label: "Last 1h" },
+                  { value: "24h", label: "Last 24h" },
+                ]}
+              />
+            }
           />
-          <RecentEventsRail status={status} logs={logs} />
+          <RecentEventsRail events={opsRecentEvents} logs={opsLogLines} windowLabel={opsWindowLabel} />
         </section>
       </div>
     </main>

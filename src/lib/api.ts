@@ -116,6 +116,17 @@ export interface BackendHealth {
   lastHeartbeatTimestamp: string | null;
   heartbeatIntervalMs: number;
   latencyMs: number | null;
+  startup?: {
+    startedAt?: string;
+    dbReadyAt?: string;
+    paperStoreReadyAt?: string;
+    fillStoreReadyAt?: string;
+    cryptoStreamRequestedAt?: string;
+    firstCryptoAt?: string;
+    firstMarketDiscoveryAt?: string;
+    httpListeningAt?: string;
+    systemReadyAt?: string;
+  };
   engineConfig: {
     evMinCents: number;
     evMaxCents: number;

@@ -1,8 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import useSWR from "swr";
-import { getHealth, getStatus, type BackendHealth, type BackendStatus, type WorkerSnapshot } from "@/lib/api";
+import { type BackendHealth, type BackendStatus, type WorkerSnapshot } from "@/lib/api";
 import {
   Activity,
   AlertTriangle,
@@ -31,34 +30,10 @@ function formatUptime(minutes: number): string {
   return m > 0 ? `${h}h ${m}m` : `${h}h`;
 }
 
-function formatPercent(value: number | null): string {
-  if (value == null) return "—";
-  const normalized = Math.abs(value) <= 1 ? value * 100 : value;
-  return `${normalized.toFixed(1)}%`;
-}
-
 function formatAgeMs(value: number | null): string {
   if (value == null) return "—";
   if (value < 1_000) return `${value}ms`;
   return `${(value / 1000).toFixed(1)}s`;
-}
-
-function formatCents(value: number | null): string {
-  if (value == null) return "—";
-  return `${value >= 0 ? "+" : ""}${value.toFixed(1)}c`;
-}
-
-function formatCooldown(value: number): string {
-  if (!value) return "ready";
-  if (value < 60_000) return `${Math.ceil(value / 1000)}s`;
-  return `${Math.ceil(value / 60_000)}m`;
-}
-
-function formatMoment(value: string | number | null | undefined): string {
-  if (value == null) return "never";
-  const date = typeof value === "number" ? new Date(value) : new Date(value);
-  if (Number.isNaN(date.getTime())) return "never";
-  return relativeTime(date.toISOString());
 }
 
 function formatBook(worker: WorkerSnapshot): string {
@@ -125,115 +100,22 @@ function MiniCard({ label, value, icon, tone = "blue", sub }: MiniCardProps) {
   );
 }
 
-function WorkerCard({ worker }: { worker: WorkerSnapshot }) {
-  const tone = workerTone(worker);
-  const accent = toneColor(tone);
-
-  return (
-    <div
-      className="rounded-xl p-3 flex flex-col gap-3"
-      style={{ backgroundColor: "rgba(15,23,42,0.55)", border: `1px solid ${accent}33` }}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium">
-            {worker.assetKey.toUpperCase()} Worker
-          </p>
-          <p className="font-mono text-lg font-semibold text-text">
-            {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : "No spot"}
-          </p>
-          <p className="text-xs text-muted truncate">
-            {worker.marketTicker ?? "No market assigned"}
-          </p>
-        </div>
-        <span
-          className="badge"
-          style={{ backgroundColor: `${accent}20`, color: accent }}
-        >
-          {worker.enginePhase ?? "idle"}
-        </span>
-      </div>
-
-      <div className="grid grid-cols-2 gap-2 text-xs">
-        <div>
-          <p className="text-muted">Price age</p>
-          <p className="font-mono" style={{ color: worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000 ? "#EF4444" : "#E2E8F0" }}>
-            {formatAgeMs(worker.cryptoPriceAgeMs)}
-          </p>
-        </div>
-        <div>
-          <p className="text-muted">Cooldown</p>
-          <p className="font-mono text-text">{formatCooldown(worker.cooldownRemainingMs)}</p>
-        </div>
-        <div>
-          <p className="text-muted">Edge / EV</p>
-          <p className="font-mono text-text">{formatCents(worker.currentEV)}</p>
-        </div>
-        <div>
-          <p className="text-muted">Book</p>
-          <p className="font-mono text-text">{formatBook(worker)}</p>
-        </div>
-        <div>
-          <p className="text-muted">Spread</p>
-          <p className="font-mono text-text">
-            {worker.orderbookSpread > 0 ? `${worker.orderbookSpread.toFixed(1)}c` : "—"}
-          </p>
-        </div>
-        <div>
-          <p className="text-muted">Source</p>
-          <p className="font-mono text-text">{formatMarketSource(worker.marketDataSource)}</p>
-        </div>
-        <div>
-          <p className="text-muted">Confidence</p>
-          <p className="font-mono text-text">
-            {formatPercent(worker.confidence)}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {worker.regime ? <span className="badge badge-blue">{worker.regime}</span> : null}
-        <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
-          {worker.hasValidAsk ? "orderable" : "no ask"}
-        </span>
-        {worker.candidateDirection ? (
-          <span className={worker.candidateDirection === "yes" ? "badge badge-green" : "badge badge-red"}>
-            {worker.candidateDirection.toUpperCase()}
-          </span>
-        ) : null}
-        {worker.kellyFraction != null ? (
-          <span className="badge badge-gray">Kelly {(worker.kellyFraction * 100).toFixed(2)}%</span>
-        ) : null}
-        {worker.stabilityCount != null ? (
-          <span className="badge badge-gray">Stability {worker.stabilityCount}</span>
-        ) : null}
-        {worker.lastCommittedCandidateAt ? (
-          <span className="badge badge-blue">Committed {formatMoment(worker.lastCommittedCandidateAt)}</span>
-        ) : null}
-      </div>
-
-      <div className="rounded-lg px-2.5 py-2 text-xs" style={{ backgroundColor: "rgba(2,6,23,0.5)" }}>
-        <p className="text-muted mb-1">No-trade reason</p>
-        <p className="text-text">
-          {worker.noTradeReason ?? "Trade path clear; worker waiting on entry conditions"}
-        </p>
-      </div>
-    </div>
-  );
+interface BackendStatusPanelProps {
+  health?: BackendHealth;
+  status?: BackendStatus | null;
 }
 
-export default function BackendStatusPanel() {
-  const { data: health, error, isLoading } = useSWR<BackendHealth>(
-    "backend-health",
-    getHealth,
-    { refreshInterval: 10_000, revalidateOnFocus: false }
-  );
+function durationBetween(startIso?: string, endIso?: string): string {
+  if (!startIso || !endIso) return "—";
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1_000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 
-  const { data: status } = useSWR<BackendStatus | null>(
-    "backend-status",
-    getStatus,
-    { refreshInterval: 10_000, revalidateOnFocus: false }
-  );
+export default function BackendStatusPanel({ health, status }: BackendStatusPanelProps) {
+  const error = !health || health.status !== "ok";
+  const isLoading = !health;
 
   const connected = !!health && health.status === "ok" && !error;
   const heartbeatStale = !!health?.lastHeartbeatTimestamp &&
@@ -261,6 +143,11 @@ export default function BackendStatusPanel() {
   const backendUrl =
     process.env.NEXT_PUBLIC_API_BASE?.replace("https://", "") ??
     "(not configured)";
+
+  const startupReady = durationBetween(health?.startup?.startedAt, health?.startup?.systemReadyAt);
+  const startupCrypto = durationBetween(health?.startup?.startedAt, health?.startup?.firstCryptoAt);
+  const startupMarket = durationBetween(health?.startup?.startedAt, health?.startup?.firstMarketDiscoveryAt);
+  const degradedWorkers = workers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker");
 
   return (
     <div
@@ -299,7 +186,6 @@ export default function BackendStatusPanel() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="badge badge-gray">Poll 10s</span>
             <span className={health?.liveTradingEnabled ? "badge badge-green" : "badge badge-amber"}>
               {health?.liveTradingEnabled ? "LIVE MODE" : "PAPER MODE"}
             </span>
@@ -335,7 +221,7 @@ export default function BackendStatusPanel() {
 
       {connected && health ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 px-4 py-4" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
+          <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2 px-4 py-4" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
             <MiniCard
               label="Uptime"
               value={formatUptime(health.uptimeMinutes)}
@@ -365,18 +251,18 @@ export default function BackendStatusPanel() {
               tone={heartbeatStale ? "red" : "green"}
             />
             <MiniCard
+              label="API Latency"
+              value={health.latencyMs != null ? `${health.latencyMs}ms` : "—"}
+              sub="backend proxy roundtrip"
+              icon={<Wifi size={11} />}
+              tone={highLatency ? "amber" : "blue"}
+            />
+            <MiniCard
               label="Orderable"
               value={`${workers.filter((worker) => worker.hasValidAsk).length}/${workers.length || 0}`}
               sub="workers with valid asks"
               icon={<Target size={11} />}
               tone={workers.length > 0 && workers.every((worker) => worker.hasValidAsk) ? "green" : "amber"}
-            />
-            <MiniCard
-              label="Trade Count"
-              value={`${health.tradeCount}`}
-              sub={`${health.pendingTrades} pending / ${health.settledTrades} settled`}
-              icon={<Target size={11} />}
-              tone="blue"
             />
             <MiniCard
               label="Logs"
@@ -386,52 +272,63 @@ export default function BackendStatusPanel() {
               tone={logStale ? "amber" : "violet"}
             />
             <MiniCard
-              label="Max Trade"
-              value={`$${(health.maxTradeCents / 100).toFixed(0)}`}
-              sub={`EV ${health.engineConfig.evMinCents}-${health.engineConfig.evMaxCents}c`}
+              label="Startup Ready"
+              value={startupReady}
+              sub={`crypto ${startupCrypto} · market ${startupMarket}`}
               icon={<Zap size={11} />}
-              tone="violet"
+              tone="green"
             />
             <MiniCard
-              label="Stability"
-              value={`${health.engineConfig.stabilityWindow}`}
-              sub="confirmation ticks"
+              label="Live Config"
+              value={`EV ${health.engineConfig.evMinCents}-${health.engineConfig.evMaxCents}c`}
+              sub={`${Math.round(health.engineConfig.tradingWindowOpenMs / 60_000)}m to ${Math.round(health.engineConfig.tradingWindowCloseMs / 1000)}s · min entry ${health.engineConfig.minEntryPriceCents}c`}
               icon={<Shield size={11} />}
-              tone="blue"
-            />
-            <MiniCard
-              label="Window"
-              value={`${Math.round(health.engineConfig.tradingWindowOpenMs / 60_000)}m to ${Math.round(health.engineConfig.tradingWindowCloseMs / 1000)}s`}
-              sub={`min entry ${health.engineConfig.minEntryPriceCents}c`}
-              icon={<Clock size={11} />}
               tone="blue"
             />
           </div>
 
-          {workers.length > 0 ? (
-            <div className="px-4 pb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
-              {workers.map((worker) => (
-                <WorkerCard key={worker.assetKey} worker={worker} />
-              ))}
-            </div>
-          ) : null}
-
-          {status?.recentEvents?.length ? (
-            <div className="px-4 pb-4" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
-              <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(15,23,42,0.55)", border: "1px solid rgba(51,65,85,0.9)" }}>
-                <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium mb-2">
-                  Recent Engine Events
-                </p>
-                <div className="space-y-1">
-                  {status.recentEvents.slice(-6).reverse().map((event, index) => (
-                    <p key={`${event}-${index}`} className="text-xs font-mono text-muted truncate">
-                      {event}
-                    </p>
-                  ))}
-                </div>
+          <div className="px-4 pb-4 grid gap-3 xl:grid-cols-[1.1fr_0.9fr]" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
+            <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(15,23,42,0.55)", border: "1px solid rgba(51,65,85,0.9)" }}>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium mb-2">
+                Health exceptions
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {!connected ? <span className="badge badge-red">backend disconnected</span> : null}
+                {heartbeatStale ? <span className="badge badge-amber">heartbeat stale</span> : null}
+                {logStale ? <span className="badge badge-amber">logs stale</span> : null}
+                {highLatency ? <span className="badge badge-amber">latency {health.latencyMs}ms</span> : null}
+                {hardWarnings.length > 0 ? <span className="badge badge-red">{hardWarnings.length} stale quote worker{hardWarnings.length === 1 ? "" : "s"}</span> : null}
+                {softWarnings.length > 0 ? <span className="badge badge-amber">{softWarnings.length} missing market/spot worker{softWarnings.length === 1 ? "" : "s"}</span> : null}
+                {degradedWorkers.length > 0 ? <span className="badge badge-blue">{degradedWorkers.length} fallback data source worker{degradedWorkers.length === 1 ? "" : "s"}</span> : null}
+                {hardWarnings.length === 0 && softWarnings.length === 0 && !heartbeatStale && !logStale && !highLatency ? (
+                  <span className="badge badge-green">no active health exceptions</span>
+                ) : null}
               </div>
             </div>
-          ) : null}
+
+            <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(15,23,42,0.55)", border: "1px solid rgba(51,65,85,0.9)" }}>
+              <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium mb-2">
+                Current data sources
+              </p>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                {workers.map((worker) => (
+                  <div key={worker.assetKey} className="rounded-lg px-2.5 py-2" style={{ backgroundColor: "rgba(2,6,23,0.45)" }}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
+                      <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
+                        {worker.hasValidAsk ? "ready" : "blocked"}
+                      </span>
+                    </div>
+                    <p className="mt-1 font-mono text-muted">{formatMarketSource(worker.marketDataSource)}</p>
+                    <p className="font-mono" style={{ color: workerTone(worker) === "red" ? "#EF4444" : "#E2E8F0" }}>
+                      age {formatAgeMs(worker.cryptoPriceAgeMs)}
+                    </p>
+                    <p className="font-mono text-muted">book {formatBook(worker)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </>
       ) : null}
 
