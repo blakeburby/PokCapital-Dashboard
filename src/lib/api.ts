@@ -157,6 +157,26 @@ export interface AlertPreference {
   updatedAt: string;
 }
 
+export interface PricingLatencySnapshot {
+  cryptoEventReceivedAt: number | null;
+  cryptoAppliedAt: number | null;
+  kalshiTickerReceivedAt: number | null;
+  marketQuoteAppliedAt: number | null;
+  evaluationStartedAt: number | null;
+  candidateCommittedAt: number | null;
+  cryptoApplyLagMs: number | null;
+  cryptoApplyP50Ms: number | null;
+  cryptoApplyP95Ms: number | null;
+  marketApplyLagMs: number | null;
+  marketApplyP50Ms: number | null;
+  marketApplyP95Ms: number | null;
+  lastEvaluationLagMs: number | null;
+  rolloverLagMs: number | null;
+  rolloverP50Ms: number | null;
+  rolloverP95Ms: number | null;
+  pricingPathHealthy: boolean;
+}
+
 // ─── Backend Status (per-worker observability) ────────────────────────────────
 
 export interface WorkerSnapshot {
@@ -188,14 +208,70 @@ export interface WorkerSnapshot {
   hasValidAsk?: boolean | null;
   lastOrderableAt?: number | null;
   lastCommittedCandidateAt?: string | number | null;
+  pricingLatency?: PricingLatencySnapshot | null;
 }
 
 export interface BackendStatus {
   timestamp: string;
   workers: WorkerSnapshot[];
   positionTracker: { active: number; max: number };
+  pricing?: {
+    pricingPathHealthy: boolean;
+    cryptoApplyLagMs: number | null;
+    marketApplyLagMs: number | null;
+    lastEvaluationLagMs: number | null;
+    rolloverLagMs: number | null;
+  };
+  startup?: {
+    startedAt?: string | null;
+    firstCryptoAt?: string | null;
+    firstMarketDiscoveryAt?: string | null;
+    systemReadyAt?: string | null;
+  };
   recentEvents: string[];
+  recentEventEntries?: Array<{
+    timestamp: string;
+    severity: string;
+    category: string;
+    scope: string | null;
+    message: string;
+    context: Record<string, string>;
+    rendered: string;
+  }>;
   latencyMs: number | null;
+}
+
+export interface TerminalOperatorSummary {
+  systemTrust: "GO" | "CAUTION" | "NO-GO";
+  opportunityState: "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
+  orderableWorkers: number;
+  worstQuoteAgeMs: number | null;
+  activePositions: number;
+  lastFillAt: string | null;
+  lastWarningAt: string | null;
+  lastWarningMessage: string | null;
+}
+
+export interface TerminalBlockerSummary {
+  data: number;
+  confidence: number;
+  ev: number;
+  risk: number;
+  window: number;
+  other: number;
+  recentlyCommitted: number;
+  clear: number;
+}
+
+export interface TerminalWorkerSnapshot extends WorkerSnapshot {
+  pricingLatency?: PricingLatencySnapshot | null;
+}
+
+export interface TerminalSnapshot {
+  timestamp: string;
+  operatorSummary: TerminalOperatorSummary;
+  blockerSummary: TerminalBlockerSummary;
+  workers: TerminalWorkerSnapshot[];
 }
 
 export interface BreakdownRow {
@@ -425,6 +501,27 @@ export async function getStatus(): Promise<BackendStatus | null> {
   } catch {
     return null;
   }
+}
+
+export function getTerminalStreamUrl(): string | null {
+  const explicit = process.env.NEXT_PUBLIC_WS_BASE?.trim();
+  if (explicit) {
+    return explicit.replace(/\/$/, "") + "/terminal-stream";
+  }
+
+  const apiBase = process.env.NEXT_PUBLIC_API_BASE?.trim();
+  if (!apiBase) return null;
+  const normalized = apiBase.replace(/\/$/, "");
+  if (normalized.startsWith("https://")) {
+    return `wss://${normalized.slice("https://".length)}/terminal-stream`;
+  }
+  if (normalized.startsWith("http://")) {
+    return `ws://${normalized.slice("http://".length)}/terminal-stream`;
+  }
+  if (normalized.startsWith("wss://") || normalized.startsWith("ws://")) {
+    return `${normalized}/terminal-stream`;
+  }
+  return null;
 }
 
 export async function getAnalytics(): Promise<FillAnalytics> {

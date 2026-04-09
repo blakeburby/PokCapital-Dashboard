@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Bar,
@@ -41,6 +41,7 @@ import {
   getPaperBalance,
   getPaperStats,
   getStatus,
+  getTerminalStreamUrl,
   getTradesWithOptions,
   type AccountBalance,
   type AlertPreference,
@@ -52,6 +53,8 @@ import {
   type LogsResponse,
   type PaperBalance,
   type Stats,
+  type TerminalSnapshot,
+  type TerminalWorkerSnapshot,
   type Trade,
   upsertAlertPreference,
 } from "@/lib/api";
@@ -190,6 +193,7 @@ function summarizeFills(fills: KalshiFill[]): FillSummarySnapshot | null {
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
 type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window" | "other";
 type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
+type TerminalConnectionState = "live" | "reconnecting" | "polling" | "stale";
 type OpsWindow = "15m" | "1h" | "24h";
 type LedgerWindow = "today" | "7d" | "all";
 type StageMetric = { label: string; value: number; tone: Tone; sub: string };
@@ -223,6 +227,13 @@ interface FillSummarySnapshot {
   firstFillAt: string | null;
   lastFillAt: string | null;
 }
+
+function maxFinite(values: Array<number | null | undefined>): number | null {
+  const finite = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return finite.length > 0 ? Math.max(...finite) : null;
+}
+
+type WorkerLike = TerminalWorkerSnapshot;
 
 export interface DashboardConsoleBootstrap {
   health?: BackendHealth;
@@ -260,6 +271,39 @@ function toneValue(tone: Tone): { color: string; background: string } {
   return { color: "#8B5CF6", background: "rgba(139,92,246,0.12)" };
 }
 
+function connectionBadge(connectionState: TerminalConnectionState, stale: boolean): {
+  label: string;
+  tone: Tone;
+  sub: string;
+} {
+  if (stale) {
+    return {
+      label: "Terminal stale",
+      tone: "red",
+      sub: "No live terminal update in >3s",
+    };
+  }
+  if (connectionState === "live") {
+    return {
+      label: "Live stream",
+      tone: "green",
+      sub: "WebSocket terminal active",
+    };
+  }
+  if (connectionState === "polling") {
+    return {
+      label: "Polling fallback",
+      tone: "amber",
+      sub: "1s /status recovery mode",
+    };
+  }
+  return {
+    label: "Reconnecting",
+    tone: "blue",
+    sub: "Attempting to restore socket",
+  };
+}
+
 function assetFromFill(fill: KalshiFill): string {
   if (fill.asset) return fill.asset;
   const match = fill.ticker.match(/^KX([A-Z]+)\d/);
@@ -273,15 +317,6 @@ function formatRelativeMoment(value: string | number | null | undefined): string
   return formatRelativeTime(date.toISOString());
 }
 
-function formatBook(worker: BackendStatus["workers"][number]): string {
-  const yesBid = worker.marketYesBidCents;
-  const yesAsk = worker.marketYesAskCents;
-  const noBid = worker.marketNoBidCents;
-  const noAsk = worker.marketNoAskCents;
-  if ([yesBid, yesAsk, noBid, noAsk].every((value) => value == null)) return "—";
-  return `Y ${yesBid ?? "—"}/${yesAsk ?? "—"} · N ${noBid ?? "—"}/${noAsk ?? "—"}`;
-}
-
 function formatMarketSource(source: string | null | undefined): string {
   if (!source) return "—";
   if (source === "kalshi_ws_ticker") return "ws";
@@ -290,7 +325,7 @@ function formatMarketSource(source: string | null | undefined): string {
   return source.replace(/^kalshi_/, "").replace(/_/g, " ");
 }
 
-function classifyWorkerBlocker(worker: BackendStatus["workers"][number]): BlockerCategory {
+function classifyWorkerBlocker(worker: WorkerLike): BlockerCategory {
   if (worker.marketTicker == null || worker.currentPrice == null || worker.hasValidAsk === false) return "data";
 
   const reason = (worker.noTradeReason ?? "").toLowerCase();
@@ -335,7 +370,10 @@ function sampleMeta(
   return { label: `n=${n}`, detail: `${unit}`, tone: "green" };
 }
 
-function deriveOperatorState(health: BackendHealth | undefined, status: BackendStatus | null | undefined) {
+function deriveOperatorState(
+  health: BackendHealth | undefined,
+  status: BackendStatus | null | undefined
+): { label: "GO" | "CAUTION" | "NO-GO"; tone: Tone; reasons: string[] } {
   const connected = !!health && health.status === "ok";
   const heartbeatStale = !!health?.lastHeartbeatTimestamp &&
     Date.now() - new Date(health.lastHeartbeatTimestamp).getTime() > 10 * 60_000;
@@ -369,7 +407,7 @@ function deriveOperatorState(health: BackendHealth | undefined, status: BackendS
 
 function deriveOpportunityState(
   operator: ReturnType<typeof deriveOperatorState>,
-  workers: BackendStatus["workers"],
+  workers: WorkerLike[],
   blockerSummary: { counts: Record<BlockerCategory, number>; orderableCount: number; recentlyCommittedCount: number },
   positionTracker: BackendStatus["positionTracker"] | undefined
 ): { label: OpportunityState; tone: Tone; sub: string } {
@@ -437,6 +475,86 @@ function inLedgerWindow(value: string, window: LedgerWindow): boolean {
   if (window === "all") return true;
   if (window === "today") return localDayKey(ts) === localDayKey(Date.now());
   return Date.now() - ts <= 7 * 24 * 60 * 60_000;
+}
+
+function buildBlockerSummary(
+  workers: WorkerLike[],
+  commitWindowMs: number
+): { counts: Record<BlockerCategory, number>; orderableCount: number; recentlyCommittedCount: number } {
+  const counts: Record<BlockerCategory, number> = {
+    clear: 0,
+    confidence: 0,
+    ev: 0,
+    data: 0,
+    risk: 0,
+    window: 0,
+    other: 0,
+  };
+
+  const now = Date.now();
+  for (const worker of workers) {
+    counts[classifyWorkerBlocker(worker)] += 1;
+  }
+
+  return {
+    counts,
+    orderableCount: workers.filter((worker) => worker.hasValidAsk).length,
+    recentlyCommittedCount: workers.filter((worker) => {
+      if (worker.lastCommittedCandidateAt == null) return false;
+      const committedAt = typeof worker.lastCommittedCandidateAt === "number"
+        ? worker.lastCommittedCandidateAt
+        : new Date(worker.lastCommittedCandidateAt).getTime();
+      return Number.isFinite(committedAt) && now - committedAt <= commitWindowMs;
+    }).length,
+  };
+}
+
+function findLastWarningEvent(lines: string[]): { at: string | null; message: string | null } {
+  const line = [...lines].reverse().find((entry) => /rejected|invalid_order|warn|error/i.test(entry));
+  if (!line) return { at: null, message: null };
+  const ts = extractTimestamp(line);
+  return {
+    at: ts != null ? new Date(ts).toISOString() : null,
+    message: line,
+  };
+}
+
+function buildTerminalFallbackSnapshot(
+  health: BackendHealth | undefined,
+  status: BackendStatus | null | undefined,
+  analytics?: FillAnalytics
+): TerminalSnapshot | null {
+  if (!status) return null;
+  const workers = status.workers ?? [];
+  const blockerSummary = buildBlockerSummary(workers, 15 * 60_000);
+  const operator = deriveOperatorState(health, status);
+  const opportunity = deriveOpportunityState(operator, workers, blockerSummary, status.positionTracker);
+  const warning = findLastWarningEvent(status.recentEvents ?? []);
+
+  return {
+    timestamp: status.timestamp ?? health?.timestamp ?? new Date().toISOString(),
+    operatorSummary: {
+      systemTrust: operator.label,
+      opportunityState: opportunity.label,
+      orderableWorkers: blockerSummary.orderableCount,
+      worstQuoteAgeMs: maxFinite(workers.map((worker) => worker.cryptoPriceAgeMs)),
+      activePositions: status.positionTracker?.active ?? 0,
+      lastFillAt: analytics?.summary.lastFillAt ?? null,
+      lastWarningAt: warning.at,
+      lastWarningMessage: warning.message,
+    },
+    blockerSummary: {
+      data: blockerSummary.counts.data,
+      confidence: blockerSummary.counts.confidence,
+      ev: blockerSummary.counts.ev,
+      risk: blockerSummary.counts.risk,
+      window: blockerSummary.counts.window,
+      other: blockerSummary.counts.other,
+      recentlyCommitted: blockerSummary.recentlyCommittedCount,
+      clear: blockerSummary.counts.clear,
+    },
+    workers,
+  };
 }
 
 function countMatches(lines: string[], matcher: RegExp): number {
@@ -638,7 +756,7 @@ function groupExecutionEvents(events: ExecutionEvent[]) {
     .sort((a, b) => (b.events[0]?.timestamp ?? 0) - (a.events[0]?.timestamp ?? 0));
 }
 
-function isOneSidedBook(worker: BackendStatus["workers"][number]): boolean {
+function isOneSidedBook(worker: WorkerLike): boolean {
   const asks = [worker.marketYesAskCents, worker.marketNoAskCents];
   const bids = [worker.marketYesBidCents, worker.marketNoBidCents];
   return asks.some((value) => value != null && value >= 99) || bids.some((value) => value != null && value <= 1);
@@ -885,7 +1003,21 @@ function BreakdownTable({
   );
 }
 
-function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
+function formatProbabilityCell(value: number | null | undefined): string {
+  return formatPercent(value);
+}
+
+function WorkerMatrix({
+  workers,
+  connectionState,
+  changedWorkerUntil,
+  now,
+}: {
+  workers: TerminalWorkerSnapshot[];
+  connectionState: TerminalConnectionState;
+  changedWorkerUntil: Record<string, number>;
+  now: number;
+}) {
   if (workers.length === 0) {
     return (
       <div className="panel text-sm text-muted">
@@ -900,23 +1032,29 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
       <div className="flex items-center justify-between mb-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Worker Matrix</p>
-          <p className="text-sm text-muted">Fast scan of trust, book quality, and trade blockers per asset</p>
+          <p className="text-sm text-muted">1-second terminal scan of live spot, book quality, probabilities, EV, and blockers per asset</p>
         </div>
-        <HeroSignal label={`${workers.length} workers`} tone="blue" />
+        <div className="flex items-center gap-2">
+          <HeroSignal label={`${workers.length} workers`} tone="blue" />
+          <HeroSignal label={connectionBadge(connectionState, false).label} tone={connectionBadge(connectionState, false).tone} />
+        </div>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[920px]">
+        <table className="w-full text-sm min-w-[1320px]">
           <thead>
             <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
               <th className="py-2 font-medium">Asset</th>
               <th className="py-2 font-medium">Market</th>
               <th className="py-2 font-medium">TTE</th>
               <th className="py-2 font-medium">Spot</th>
-              <th className="py-2 font-medium">Book</th>
+              <th className="py-2 font-medium">YES bid/ask</th>
+              <th className="py-2 font-medium">NO bid/ask</th>
               <th className="py-2 font-medium">Age</th>
               <th className="py-2 font-medium">Source</th>
               <th className="py-2 font-medium">EV</th>
+              <th className="py-2 font-medium">Model P</th>
+              <th className="py-2 font-medium">Market P</th>
               <th className="py-2 font-medium">Confidence</th>
               <th className="py-2 font-medium">Blocker</th>
               <th className="py-2 font-medium">Last commit</th>
@@ -941,16 +1079,26 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
                     ? "amber"
                     : "green";
               const agePalette = toneValue(ageTone);
+              const recentlyChanged = (changedWorkerUntil[worker.assetKey] ?? 0) > now;
 
               return (
                 <tr
                   key={worker.assetKey}
                   className="border-b align-top"
-                  style={{ borderColor: "rgba(148,163,184,0.08)" }}
+                  style={{
+                    borderColor: "rgba(148,163,184,0.08)",
+                    backgroundColor: recentlyChanged ? "rgba(56,189,248,0.04)" : "transparent",
+                  }}
                 >
                   <td className="py-3">
                     <div className="flex flex-col gap-1">
-                      <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
+                        <span
+                          className={`inline-flex h-2.5 w-2.5 rounded-full ${recentlyChanged ? "animate-pulse" : ""}`}
+                          style={{ backgroundColor: recentlyChanged ? "#38BDF8" : "rgba(148,163,184,0.45)" }}
+                        />
+                      </div>
                       <div className="flex flex-wrap gap-1">
                         <span
                           className={
@@ -979,10 +1127,11 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
                   <td className="py-3 font-mono text-text">
                     {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : "—"}
                   </td>
+                  <td className="py-3 font-mono text-text">{`${worker.marketYesBidCents ?? "—"}/${worker.marketYesAskCents ?? "—"}`}</td>
                   <td className="py-3">
                     <div className="flex flex-col gap-1">
-                      <span className="font-mono text-text">{formatBook(worker)}</span>
-                      {oneSided ? <span className="badge badge-amber">one-sided</span> : null}
+                      <span className="font-mono text-text">{`${worker.marketNoBidCents ?? "—"}/${worker.marketNoAskCents ?? "—"}`}</span>
+                      {oneSided ? <span className="badge badge-amber">fragile</span> : null}
                     </div>
                   </td>
                   <td className="py-3 font-mono" style={{ color: agePalette.color }}>
@@ -1002,7 +1151,9 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
                   <td className="py-3 font-mono text-text">
                     {worker.currentEV != null ? `${worker.currentEV >= 0 ? "+" : ""}${worker.currentEV.toFixed(1)}c` : "—"}
                   </td>
-                  <td className="py-3 font-mono text-text">{formatPercent(worker.confidence)}</td>
+                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.modelProbability)}</td>
+                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.marketProbability)}</td>
+                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.confidence)}</td>
                   <td className="py-3">
                     <div className="flex flex-col gap-1">
                       <span
@@ -2070,6 +2221,21 @@ export default function OperatorConsoleClient({
   const [opsWindow, setOpsWindow] = useState<OpsWindow>("15m");
   const [ledgerWindow, setLedgerWindow] = useState<LedgerWindow>("today");
   const [loadDeepData, setLoadDeepData] = useState(false);
+  const [terminalSnapshot, setTerminalSnapshot] = useState<TerminalSnapshot | null>(() =>
+    buildTerminalFallbackSnapshot(initialData?.health, initialData?.status, initialData?.analytics)
+  );
+  const [terminalConnection, setTerminalConnection] = useState<TerminalConnectionState>("reconnecting");
+  const [lastTerminalUpdateAt, setLastTerminalUpdateAt] = useState<number>(() => Date.now());
+  const [terminalClock, setTerminalClock] = useState<number>(() => Date.now());
+  const [changedWorkerUntil, setChangedWorkerUntil] = useState<Record<string, number>>({});
+  const terminalSocketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fallbackPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const stalenessTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const previousTerminalFingerprintsRef = useRef<Record<string, string>>({});
+  const lastSocketMessageAtRef = useRef<number>(Date.now());
+  const healthRef = useRef<BackendHealth | undefined>(initialData?.health);
+  const analyticsRef = useRef<FillAnalytics | undefined>(initialData?.analytics);
 
   useEffect(() => {
     setLoadDeepData(true);
@@ -2151,7 +2317,197 @@ export default function OperatorConsoleClient({
     }
   );
 
+  healthRef.current = health;
+  analyticsRef.current = analytics;
+
+  const applyTerminalSnapshot = (snapshot: TerminalSnapshot | null) => {
+    if (!snapshot) return;
+    const now = Date.now();
+    const nextFingerprints: Record<string, string> = {};
+    const changed: Record<string, number> = {};
+
+    for (const worker of snapshot.workers) {
+      const fingerprint = [
+        worker.currentPrice ?? "—",
+        worker.marketYesBidCents ?? "—",
+        worker.marketYesAskCents ?? "—",
+        worker.marketNoBidCents ?? "—",
+        worker.marketNoAskCents ?? "—",
+        worker.currentEV ?? "—",
+        worker.modelProbability ?? "—",
+        worker.marketProbability ?? "—",
+        worker.confidence ?? "—",
+        worker.noTradeReason ?? "clear",
+        worker.enginePhase ?? "idle",
+      ].join("|");
+      nextFingerprints[worker.assetKey] = fingerprint;
+      if (previousTerminalFingerprintsRef.current[worker.assetKey] !== fingerprint) {
+        changed[worker.assetKey] = now + 1_200;
+      }
+    }
+
+    previousTerminalFingerprintsRef.current = nextFingerprints;
+    setChangedWorkerUntil((prev) => {
+      const filtered = Object.fromEntries(
+        Object.entries(prev).filter(([, until]) => until > now)
+      );
+      return { ...filtered, ...changed };
+    });
+    setTerminalSnapshot(snapshot);
+    setLastTerminalUpdateAt(now);
+    setTerminalClock(now);
+  };
+
+  useEffect(() => {
+    const fallback = buildTerminalFallbackSnapshot(health, status, analytics);
+    if (!fallback) return;
+    if (terminalConnection !== "live") {
+      applyTerminalSnapshot(fallback);
+    }
+  }, [analytics, health, status, terminalConnection]);
+
+  useEffect(() => {
+    const terminalUrl = getTerminalStreamUrl();
+    let cancelled = false;
+    let fallbackPollInFlight = false;
+
+    const stopFallbackPolling = () => {
+      if (fallbackPollRef.current) {
+        clearInterval(fallbackPollRef.current);
+        fallbackPollRef.current = null;
+      }
+    };
+
+    const startFallbackPolling = () => {
+      if (fallbackPollRef.current || cancelled) return;
+      setTerminalConnection("polling");
+      fallbackPollRef.current = setInterval(async () => {
+        if (fallbackPollInFlight) return;
+        fallbackPollInFlight = true;
+        try {
+          const nextStatus = await getStatus();
+          if (!nextStatus) {
+            setTerminalClock(Date.now());
+            return;
+          }
+          const fallback = buildTerminalFallbackSnapshot(healthRef.current, nextStatus, analyticsRef.current);
+          applyTerminalSnapshot(fallback);
+          setTerminalConnection("polling");
+        } finally {
+          fallbackPollInFlight = false;
+        }
+      }, 1_000);
+    };
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimerRef.current) return;
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        connectSocket();
+      }, 1_500);
+    };
+
+    const connectSocket = () => {
+      if (cancelled) return;
+      if (!terminalUrl) {
+        startFallbackPolling();
+        return;
+      }
+
+      setTerminalConnection((current) => (current === "live" ? current : "reconnecting"));
+
+      try {
+        const socket = new WebSocket(terminalUrl);
+        terminalSocketRef.current = socket;
+
+        socket.onmessage = (event) => {
+          try {
+            const snapshot = JSON.parse(String(event.data)) as TerminalSnapshot;
+            lastSocketMessageAtRef.current = Date.now();
+            stopFallbackPolling();
+            setTerminalConnection("live");
+            applyTerminalSnapshot(snapshot);
+          } catch {
+            setTerminalClock(Date.now());
+          }
+        };
+
+        socket.onerror = () => {
+          setTerminalClock(Date.now());
+        };
+
+        socket.onclose = () => {
+          if (terminalSocketRef.current === socket) {
+            terminalSocketRef.current = null;
+          }
+          if (cancelled) return;
+          setTerminalConnection("reconnecting");
+          startFallbackPolling();
+          scheduleReconnect();
+        };
+      } catch {
+        startFallbackPolling();
+        scheduleReconnect();
+      }
+    };
+
+    connectSocket();
+
+    stalenessTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      setTerminalClock(now);
+      if (now - lastSocketMessageAtRef.current > 3_000) {
+        setTerminalConnection((current) => (current === "live" ? "polling" : current));
+        if (terminalSocketRef.current?.readyState === WebSocket.OPEN) {
+          terminalSocketRef.current.close();
+        }
+        startFallbackPolling();
+      }
+    }, 1_000);
+
+    return () => {
+      cancelled = true;
+      stopFallbackPolling();
+      if (stalenessTimerRef.current) {
+        clearInterval(stalenessTimerRef.current);
+        stalenessTimerRef.current = null;
+      }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      terminalSocketRef.current?.close();
+      terminalSocketRef.current = null;
+    };
+  }, []);
+
   const operator = useMemo(() => deriveOperatorState(health, status), [health, status]);
+  const terminalWorkers: TerminalWorkerSnapshot[] =
+    terminalSnapshot?.workers ??
+    ((status?.workers as TerminalWorkerSnapshot[] | undefined) ?? []);
+  const terminalIsStale = terminalClock - lastTerminalUpdateAt > 3_000;
+  const terminalBadge = useMemo(
+    () => connectionBadge(terminalConnection, terminalIsStale),
+    [terminalConnection, terminalIsStale]
+  );
+  const terminalBlockerSummary = useMemo(() => {
+    if (terminalSnapshot) {
+      return {
+        counts: {
+          clear: terminalSnapshot.blockerSummary.clear,
+          confidence: terminalSnapshot.blockerSummary.confidence,
+          ev: terminalSnapshot.blockerSummary.ev,
+          data: terminalSnapshot.blockerSummary.data,
+          risk: terminalSnapshot.blockerSummary.risk,
+          window: terminalSnapshot.blockerSummary.window,
+          other: terminalSnapshot.blockerSummary.other,
+        } satisfies Record<BlockerCategory, number>,
+        orderableCount: terminalSnapshot.operatorSummary.orderableWorkers,
+        recentlyCommittedCount: terminalSnapshot.blockerSummary.recentlyCommitted,
+      };
+    }
+    return buildBlockerSummary(terminalWorkers, windowMs(opsWindow));
+  }, [opsWindow, terminalSnapshot, terminalWorkers]);
   const summary = analytics?.summary;
   const strategyFills = useMemo(
     () => (fills ?? []).filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase())),
@@ -2215,43 +2571,23 @@ export default function OperatorConsoleClient({
     ? sessionSummary.winsCount / sessionSummary.settledFills
     : null;
   const fastestWorkerAge = useMemo(() => {
-    const ages = (status?.workers ?? [])
+    const ages = terminalWorkers
       .map((worker) => worker.cryptoPriceAgeMs)
       .filter((age): age is number => age != null);
     if (ages.length === 0) return null;
     return Math.min(...ages);
-  }, [status]);
+  }, [terminalWorkers]);
   const slowestWorkerAge = useMemo(() => {
-    const ages = (status?.workers ?? [])
+    const ages = terminalWorkers
       .map((worker) => worker.cryptoPriceAgeMs)
       .filter((age): age is number => age != null);
     if (ages.length === 0) return null;
     return Math.max(...ages);
-  }, [status]);
+  }, [terminalWorkers]);
+  const terminalWorstQuoteAge = terminalSnapshot?.operatorSummary.worstQuoteAgeMs ?? slowestWorkerAge;
+  const terminalActivePositions = terminalSnapshot?.operatorSummary.activePositions ?? status?.positionTracker.active ?? 0;
   const workers = status?.workers ?? [];
-  const blockerSummary = useMemo(() => {
-    const counts: Record<BlockerCategory, number> = {
-      clear: 0,
-      confidence: 0,
-      ev: 0,
-      data: 0,
-      risk: 0,
-      window: 0,
-      other: 0,
-    };
-
-    for (const worker of workers) {
-      counts[classifyWorkerBlocker(worker)] += 1;
-    }
-
-    const orderableCount = workers.filter((worker) => worker.hasValidAsk).length;
-    const recentlyCommittedCount = workers.filter((worker) =>
-      worker.lastCommittedCandidateAt != null &&
-      inOpsWindow(String(worker.lastCommittedCandidateAt), opsWindow)
-    ).length;
-
-    return { counts, orderableCount, recentlyCommittedCount };
-  }, [workers, opsWindow]);
+  const blockerSummary = useMemo(() => buildBlockerSummary(workers, windowMs(opsWindow)), [workers, opsWindow]);
   const executionFunnel = useMemo<StageMetric[]>(() => {
     const candidateCount = workers.filter((worker) => worker.candidateDirection != null).length;
     const committedCount = workers.filter((worker) =>
@@ -2379,10 +2715,39 @@ export default function OperatorConsoleClient({
 
     return items.slice(0, 3);
   }, [workers, executionEvents, anomalySummary, blockerSummary.orderableCount, operator, opsWindowLabel, status?.positionTracker.active]);
-  const opportunity = useMemo(
-    () => deriveOpportunityState(operator, workers, blockerSummary, status?.positionTracker),
-    [operator, workers, blockerSummary, status?.positionTracker]
-  );
+  const terminalOperator = useMemo(() => {
+    const label = terminalSnapshot?.operatorSummary.systemTrust ?? operator.label;
+    const tone: Tone = label === "GO" ? "green" : label === "CAUTION" ? "amber" : "red";
+    return {
+      label,
+      tone,
+      reasons: operator.reasons,
+    };
+  }, [operator.reasons, operator.label, terminalSnapshot]);
+  const terminalOpportunity = useMemo(() => {
+    if (!terminalSnapshot) {
+      return deriveOpportunityState(terminalOperator, terminalWorkers, terminalBlockerSummary, status?.positionTracker);
+    }
+
+    const label = terminalSnapshot.operatorSummary.opportunityState;
+    const tone: Tone =
+      label === "EXECUTING" ? "green" :
+      label === "COMMITTED" ? "blue" :
+      label === "SCANNING" ? (terminalOperator.label === "GO" ? "green" : "blue") :
+      (terminalOperator.label === "NO-GO" || terminalBlockerSummary.counts.data > 0 ? "red" : "amber");
+    const sub =
+      label === "EXECUTING"
+        ? `${terminalSnapshot.operatorSummary.activePositions}/${status?.positionTracker.max ?? terminalSnapshot.operatorSummary.activePositions} active positions`
+        : label === "COMMITTED"
+          ? `${terminalBlockerSummary.recentlyCommittedCount} worker${terminalBlockerSummary.recentlyCommittedCount === 1 ? "" : "s"} with recent committed candidates`
+          : label === "SCANNING"
+            ? `${terminalSnapshot.operatorSummary.orderableWorkers}/${terminalWorkers.length || 0} workers orderable`
+            : terminalBlockerSummary.counts.data > 0
+              ? `${terminalBlockerSummary.counts.data} data-blocked worker${terminalBlockerSummary.counts.data === 1 ? "" : "s"}`
+              : "No orderable workers right now";
+
+    return { label, tone, sub };
+  }, [status?.positionTracker, terminalBlockerSummary, terminalOperator, terminalSnapshot, terminalWorkers]);
   const latestWarning = useMemo(
     () => {
       const logWarning = (logs?.logs ?? []).slice().reverse().find((line) => {
@@ -2394,6 +2759,9 @@ export default function OperatorConsoleClient({
     },
     [logs, executionEvents]
   );
+  const terminalLastFillAt = terminalSnapshot?.operatorSummary.lastFillAt ?? fillsSectionSummary?.lastFillAt ?? null;
+  const terminalLastWarningAt = terminalSnapshot?.operatorSummary.lastWarningAt ?? null;
+  const terminalLastWarningMessage = terminalSnapshot?.operatorSummary.lastWarningMessage ?? latestWarning;
   const settledSample = sampleMeta(fillsSectionSummary?.settledFills, "settled fills");
   const linkedSample = sampleMeta(fillsSectionSummary?.matchedFills, "linked fills");
   const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
@@ -2421,8 +2789,9 @@ export default function OperatorConsoleClient({
           <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
             <div className="max-w-3xl">
               <div className="flex flex-wrap items-center gap-2 mb-3">
-                <HeroSignal label={`System ${operator.label}`} tone={operator.tone} />
-                <HeroSignal label={`Opportunity ${opportunity.label}`} tone={opportunity.tone} />
+                <HeroSignal label={`System ${terminalOperator.label}`} tone={terminalOperator.tone} />
+                <HeroSignal label={`Opportunity ${terminalOpportunity.label}`} tone={terminalOpportunity.tone} />
+                <HeroSignal label={terminalBadge.label} tone={terminalBadge.tone} />
                 <HeroSignal label={health?.liveTradingEnabled ? "Live trading armed" : "Paper mode"} tone={health?.liveTradingEnabled ? "green" : "amber"} />
                 <HeroSignal label={summary?.fillsFromDb ? "Postgres analytics" : "Fallback analytics"} tone="violet" />
               </div>
@@ -2438,58 +2807,58 @@ export default function OperatorConsoleClient({
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 min-w-0 xl:min-w-[52rem]">
               <MetricCard
                 label="System Trust"
-                value={operator.label}
-                sub={operator.reasons[0] ?? "backend, workers, and logs are healthy"}
-                tone={operator.tone}
+                value={terminalOperator.label}
+                sub={terminalBadge.sub}
+                tone={terminalOperator.tone}
                 icon={<Shield size={14} />}
               />
               <MetricCard
                 label="Opportunity State"
-                value={opportunity.label}
-                sub={opportunity.sub}
-                tone={opportunity.tone}
+                value={terminalOpportunity.label}
+                sub={terminalOpportunity.sub}
+                tone={terminalOpportunity.tone}
                 icon={<Target size={14} />}
               />
               <MetricCard
                 label="Orderable Workers"
-                value={`${blockerSummary.orderableCount}/${workers.length || 0}`}
-                sub={`${blockerSummary.counts.data} data-blocked · ${blockerSummary.counts.ev + blockerSummary.counts.confidence} strategy-gated`}
-                tone={blockerSummary.orderableCount === workers.length && workers.length > 0 ? "green" : "amber"}
+                value={`${terminalBlockerSummary.orderableCount}/${terminalWorkers.length || 0}`}
+                sub={`${terminalBlockerSummary.counts.data} data-blocked · ${terminalBlockerSummary.counts.ev + terminalBlockerSummary.counts.confidence} strategy-gated`}
+                tone={terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" : "amber"}
                 icon={<Activity size={14} />}
               />
               <MetricCard
                 label="Worst Quote Age"
-                value={formatPriceAge(slowestWorkerAge)}
+                value={formatPriceAge(terminalWorstQuoteAge)}
                 sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
-                tone={slowestWorkerAge != null && slowestWorkerAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : "blue"}
+                tone={terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : "blue"}
                 icon={<Waves size={14} />}
               />
               <MetricCard
                 label="Active Positions"
-                value={`${status?.positionTracker.active ?? 0}/${status?.positionTracker.max ?? 0}`}
+                value={`${terminalActivePositions}/${status?.positionTracker.max ?? 0}`}
                 sub={health ? `${health.pendingTrades} pending trades · ${health.settledTrades} settled` : "position tracker"}
-                tone={(status?.positionTracker.active ?? 0) > 0 ? "green" : "blue"}
+                tone={terminalActivePositions > 0 ? "green" : "blue"}
                 icon={<Wallet size={14} />}
               />
               <MetricCard
                 label="Last Fill / Warning"
-                value={fillsSectionSummary?.lastFillAt ? formatRelativeTime(fillsSectionSummary.lastFillAt) : "no fills"}
-                sub={latestWarning ? latestWarning.slice(0, 88) : "no recent warning or reject"}
-                tone={latestWarning ? "amber" : "green"}
+                value={terminalLastFillAt ? formatRelativeTime(terminalLastFillAt) : "no fills"}
+                sub={terminalLastWarningAt ? `warning ${formatRelativeTime(terminalLastWarningAt)}` : terminalLastWarningMessage ? terminalLastWarningMessage.slice(0, 88) : "no recent warning or reject"}
+                tone={terminalLastWarningAt || terminalLastWarningMessage ? "amber" : "green"}
                 icon={<AlertTriangle size={14} />}
               />
             </div>
           </div>
 
-          {operator.reasons.length > 0 ? (
+          {terminalOperator.reasons.length > 0 ? (
             <div className="mt-5 flex flex-wrap gap-2">
-              {operator.reasons.map((reason) => (
+              {terminalOperator.reasons.map((reason) => (
                 <span
                   key={reason}
                   className="badge"
                   style={{
-                    backgroundColor: operator.label === "NO-GO" ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)",
-                    color: operator.label === "NO-GO" ? "#EF4444" : "#F59E0B",
+                    backgroundColor: terminalOperator.label === "NO-GO" ? "rgba(239,68,68,0.12)" : "rgba(245,158,11,0.12)",
+                    color: terminalOperator.label === "NO-GO" ? "#EF4444" : "#F59E0B",
                   }}
                 >
                   {reason}
@@ -2530,44 +2899,44 @@ export default function OperatorConsoleClient({
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mb-4">
             <MetricCard
               label="Orderable"
-              value={`${blockerSummary.orderableCount}/${workers.length || 0}`}
+              value={`${terminalBlockerSummary.orderableCount}/${terminalWorkers.length || 0}`}
               sub="workers with valid asks"
-              tone={blockerSummary.orderableCount === workers.length && workers.length > 0 ? "green" : "amber"}
+              tone={terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" : "amber"}
               icon={<Shield size={14} />}
             />
             <MetricCard
               label="Confidence Gate"
-              value={formatCount(blockerSummary.counts.confidence)}
+              value={formatCount(terminalBlockerSummary.counts.confidence)}
               sub="blocked by confidence threshold"
-              tone={blockerSummary.counts.confidence > 0 ? "amber" : "green"}
+              tone={terminalBlockerSummary.counts.confidence > 0 ? "amber" : "green"}
               icon={<Target size={14} />}
             />
             <MetricCard
               label="EV Gate"
-              value={formatCount(blockerSummary.counts.ev)}
+              value={formatCount(terminalBlockerSummary.counts.ev)}
               sub="blocked by edge/EV threshold"
-              tone={blockerSummary.counts.ev > 0 ? "amber" : "green"}
+              tone={terminalBlockerSummary.counts.ev > 0 ? "amber" : "green"}
               icon={<Sparkles size={14} />}
             />
             <MetricCard
               label="Data Gate"
-              value={formatCount(blockerSummary.counts.data)}
+              value={formatCount(terminalBlockerSummary.counts.data)}
               sub="crypto, market, or ask unavailable"
-              tone={blockerSummary.counts.data > 0 ? "red" : "green"}
+              tone={terminalBlockerSummary.counts.data > 0 ? "red" : "green"}
               icon={<AlertTriangle size={14} />}
             />
             <MetricCard
               label="Risk Gate"
-              value={formatCount(blockerSummary.counts.risk)}
+              value={formatCount(terminalBlockerSummary.counts.risk)}
               sub="cooldown, sizing, or exposure controls"
-              tone={blockerSummary.counts.risk > 0 ? "amber" : "green"}
+              tone={terminalBlockerSummary.counts.risk > 0 ? "amber" : "green"}
               icon={<Shield size={14} />}
             />
             <MetricCard
               label="Committed"
-              value={formatCount(blockerSummary.recentlyCommittedCount)}
+              value={formatCount(terminalBlockerSummary.recentlyCommittedCount)}
               sub="workers with a recent committed candidate"
-              tone={blockerSummary.recentlyCommittedCount > 0 ? "green" : "blue"}
+              tone={terminalBlockerSummary.recentlyCommittedCount > 0 ? "green" : "blue"}
               icon={<Activity size={14} />}
             />
           </div>
@@ -2575,7 +2944,12 @@ export default function OperatorConsoleClient({
             <ExecutionFunnel funnel={executionFunnel} windowLabel={opsWindowLabel} />
             <AnomalySummary anomalies={anomalySummary} windowLabel={opsWindowLabel} />
           </div>
-          <WorkerMatrix workers={workers} />
+          <WorkerMatrix
+            workers={terminalWorkers}
+            connectionState={terminalConnection}
+            changedWorkerUntil={changedWorkerUntil}
+            now={terminalClock}
+          />
         </section>
 
         <section className="mb-8">
