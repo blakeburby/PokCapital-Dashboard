@@ -455,10 +455,11 @@ function assetFromTicker(ticker: string | null | undefined): string | null {
 }
 
 function parseExecutionLine(line: string, source: "status" | "logs"): ExecutionEvent | null {
-  const match = line.match(/^\[(?<ts>[^\]]+)\]\s+\[(?<level>[^\]]+)\]\s+(?:\[(?<scope>[^\]]+)\]\s+)?(?:\[(?<category>[^\]]+)\]\s+)?(?<message>.*?)(?:\s+\|\s+(?<context>.*))?$/);
-  if (!match?.groups) return null;
+  const match = line.match(/^\[([^\]]+)\]\s+\[([^\]]+)\]\s+(?:\[([^\]]+)\]\s+)?(?:\[([^\]]+)\]\s+)?(.*?)(?:\s+\|\s+(.*))?$/);
+  if (!match) return null;
 
-  const message = match.groups.message?.trim() ?? "";
+  const [, ts, , scope, , rawMessage, rawContext] = match;
+  const message = rawMessage?.trim() ?? "";
   const lower = message.toLowerCase();
   let stage: ExecutionStage | null = null;
   if (lower.includes("trade candidate committed")) stage = "committed";
@@ -471,11 +472,11 @@ function parseExecutionLine(line: string, source: "status" | "logs"): ExecutionE
 
   if (!stage) return null;
 
-  const context = parseContextPairs(match.groups.context);
-  const timestamp = new Date(match.groups.ts).getTime();
+  const context = parseContextPairs(rawContext);
+  const timestamp = new Date(ts).getTime();
   const ticker = context.ticker ?? null;
   const inferredAsset =
-    (match.groups.scope?.replace(/USDT$/, "") ?? null) ||
+    (scope?.replace(/USDT$/, "") ?? null) ||
     assetFromTicker(ticker);
   const evRaw = context.evCents ?? null;
   const entryRaw = context.entryPrice ?? null;
