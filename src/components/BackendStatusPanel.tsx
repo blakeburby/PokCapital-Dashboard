@@ -60,6 +60,7 @@ function isOneSidedBook(worker: WorkerSnapshot): boolean {
 }
 
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
+const QUOTE_ALERT_MS = 6_000;
 
 function toneColor(tone: Tone): string {
   if (tone === "green") return "#22C55E";
@@ -70,7 +71,7 @@ function toneColor(tone: Tone): string {
 }
 
 function workerTone(worker: WorkerSnapshot): Tone {
-  if (worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000) return "red";
+  if (worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > QUOTE_ALERT_MS) return "red";
   if (isOneSidedBook(worker)) return "amber";
   if (worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker") return "amber";
   if (worker.marketTicker == null || worker.currentPrice == null || worker.hasValidAsk === false) return "amber";
@@ -133,7 +134,7 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
   const highLatency = (health?.latencyMs ?? 0) > 1_500;
   const workers = status?.workers ?? [];
   const hardWarnings = workers.filter((worker) =>
-    worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000
+    worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > QUOTE_ALERT_MS
   );
   const softWarnings = workers.filter((worker) =>
     (worker.marketTicker == null || worker.currentPrice == null) &&

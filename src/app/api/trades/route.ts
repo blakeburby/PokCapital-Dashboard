@@ -7,7 +7,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_BASE not set" }, { status: 500 });
   }
   try {
-    const asset = new URL(req.url).searchParams.get("asset");
+    const searchParams = new URL(req.url).searchParams;
+    const asset = searchParams.get("asset");
+    const limit = Number(searchParams.get("limit") ?? "");
     const url = asset
       ? `${RAILWAY}/trades?asset=${encodeURIComponent(asset)}`
       : `${RAILWAY}/trades`;
@@ -18,7 +20,11 @@ export async function GET(req: NextRequest) {
         { status: res.status }
       );
     }
-    return NextResponse.json(await res.json());
+    const data = await res.json();
+    if (!Array.isArray(data) || !Number.isFinite(limit) || limit <= 0) {
+      return NextResponse.json(data);
+    }
+    return NextResponse.json(data.slice(-limit));
   } catch {
     return NextResponse.json({ error: "Failed to reach backend" }, { status: 502 });
   }

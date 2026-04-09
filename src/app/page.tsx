@@ -1,23 +1,13 @@
 import OperatorConsoleClient, { type DashboardConsoleBootstrap } from "@/components/dashboard/OperatorConsoleClient";
 import type {
-  AccountBalance,
   BackendHealth,
   BackendStatus,
   FillAnalytics,
-  KalshiFill,
-  LogsResponse,
-  PaperBalance,
-  Stats,
 } from "@/lib/api";
 
 export const dynamic = "force-dynamic";
 
 const RAILWAY = process.env.NEXT_PUBLIC_API_BASE ?? "";
-const EMPTY_LOGS: LogsResponse = {
-  logs: [],
-  meta: { count: 0, lastTimestamp: null },
-};
-
 function fallbackHealth(error: string, status: BackendHealth["status"] = "unreachable", latencyMs: number | null = null): BackendHealth {
   return {
     status,
@@ -98,29 +88,6 @@ async function fetchStatusBootstrap(): Promise<BackendStatus | null> {
   }
 }
 
-async function fetchLogsBootstrap(): Promise<LogsResponse> {
-  if (!RAILWAY) return EMPTY_LOGS;
-
-  try {
-    const data = await fetchRailwayJson<LogsResponse | string[]>("/logs");
-    if (Array.isArray(data)) {
-      return { logs: data, meta: { count: data.length, lastTimestamp: null } };
-    }
-    if (data?.logs && Array.isArray(data.logs)) {
-      return {
-        logs: data.logs,
-        meta: {
-          count: Number(data.meta?.count ?? data.logs.length),
-          lastTimestamp: data.meta?.lastTimestamp ?? null,
-        },
-      };
-    }
-    return EMPTY_LOGS;
-  } catch {
-    return EMPTY_LOGS;
-  }
-}
-
 async function fetchOptional<T>(path: string): Promise<T | undefined> {
   if (!RAILWAY) return undefined;
   try {
@@ -131,26 +98,16 @@ async function fetchOptional<T>(path: string): Promise<T | undefined> {
 }
 
 async function loadBootstrap(): Promise<DashboardConsoleBootstrap> {
-  const [health, status, analytics, liveBalance, paperBalance, paperStats, fills, logs] = await Promise.all([
+  const [health, status, analytics] = await Promise.all([
     fetchHealthBootstrap(),
     fetchStatusBootstrap(),
     fetchOptional<FillAnalytics>("/analytics"),
-    fetchOptional<AccountBalance>("/balance"),
-    fetchOptional<PaperBalance>("/paper-balance"),
-    fetchOptional<Stats>("/paper-stats"),
-    fetchOptional<KalshiFill[]>("/fills"),
-    fetchLogsBootstrap(),
   ]);
 
   return {
     health,
     status,
     analytics,
-    liveBalance,
-    paperBalance,
-    paperStats,
-    fills,
-    logs,
   };
 }
 

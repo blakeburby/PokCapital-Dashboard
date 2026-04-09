@@ -1,7 +1,7 @@
 "use client";
 
 import useSWR from "swr";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Bar,
@@ -39,6 +39,7 @@ import {
   getPaperBalance,
   getPaperStats,
   getStatus,
+  getTradesWithOptions,
   type AccountBalance,
   type BackendHealth,
   type BackendStatus,
@@ -48,10 +49,29 @@ import {
   type LogsResponse,
   type PaperBalance,
   type Stats,
+  type Trade,
 } from "@/lib/api";
 
-const REFRESH_MS = 10_000;
+const CORE_REFRESH_MS = 10_000;
+const ANALYTICS_REFRESH_MS = 30_000;
+const BALANCE_REFRESH_MS = 30_000;
+const PAPER_REFRESH_MS = 60_000;
+const TRADE_REFRESH_MS = 15_000;
+const FILL_REFRESH_MS = 45_000;
+const LOG_REFRESH_MS = 20_000;
+const FILL_LIMIT = 180;
+const LOG_LIMIT = 220;
+const TRADE_LIMIT = 40;
 const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
+const ALERT_THRESHOLDS = {
+  warningQuoteAgeMs: 3_000,
+  criticalQuoteAgeMs: 6_000,
+  rejectedOrdersInWindow: 1,
+  fallbackWorkers: 1,
+  oneSidedBooks: 1,
+  executionGapCommits: 1,
+  dataWarnings: 2,
+} as const;
 
 function formatCurrency(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
@@ -164,6 +184,21 @@ type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
 type OpsWindow = "15m" | "1h" | "24h";
 type LedgerWindow = "today" | "7d" | "all";
 type StageMetric = { label: string; value: number; tone: Tone; sub: string };
+type ExecutionStage =
+  | "candidate"
+  | "committed"
+  | "blocked"
+  | "submitted"
+  | "accepted"
+  | "rejected"
+  | "matched"
+  | "settled";
+type Escalation = {
+  title: string;
+  detail: string;
+  tone: Tone;
+  kicker: string;
+};
 
 interface FillSummarySnapshot {
   totalFills: number;
@@ -188,6 +223,23 @@ export interface DashboardConsoleBootstrap {
   paperStats?: Stats;
   fills?: KalshiFill[];
   logs?: LogsResponse;
+  trades?: Trade[];
+}
+
+interface ExecutionEvent {
+  id: string;
+  timestamp: number;
+  iso: string | null;
+  stage: ExecutionStage;
+  asset: string | null;
+  ticker: string | null;
+  message: string;
+  detail: string;
+  tone: Tone;
+  orderId?: string | null;
+  evCents?: number | null;
+  entryPrice?: number | null;
+  source: "status" | "logs" | "trades";
 }
 
 function toneValue(tone: Tone): { color: string; background: string } {
@@ -281,7 +333,7 @@ function deriveOperatorState(health: BackendHealth | undefined, status: BackendS
     Date.now() - new Date(health.lastLogTimestamp).getTime() > 2 * 60_000;
   const highLatency = (health?.latencyMs ?? 0) > 1_500;
   const workers = status?.workers ?? [];
-  const staleWorkers = workers.filter((worker) => worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000);
+  const staleWorkers = workers.filter((worker) => worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.criticalQuoteAgeMs);
   const missingWorkers = workers.filter((worker) => worker.marketTicker == null || worker.currentPrice == null);
 
   const label = !connected || heartbeatStale || staleWorkers.length > 0
@@ -379,6 +431,117 @@ function inLedgerWindow(value: string, window: LedgerWindow): boolean {
 
 function countMatches(lines: string[], matcher: RegExp): number {
   return lines.filter((line) => matcher.test(line)).length;
+}
+
+function parseContextPairs(context: string | undefined): Record<string, string> {
+  if (!context) return {};
+  return context
+    .trim()
+    .split(/\s+/)
+    .reduce<Record<string, string>>((acc, token) => {
+      const eq = token.indexOf("=");
+      if (eq <= 0) return acc;
+      const key = token.slice(0, eq);
+      const value = token.slice(eq + 1);
+      acc[key] = value;
+      return acc;
+    }, {});
+}
+
+function assetFromTicker(ticker: string | null | undefined): string | null {
+  if (!ticker) return null;
+  const match = ticker.match(/^KX([A-Z]+)\d/);
+  return match?.[1] ?? null;
+}
+
+function parseExecutionLine(line: string, source: "status" | "logs"): ExecutionEvent | null {
+  const match = line.match(/^\[(?<ts>[^\]]+)\]\s+\[(?<level>[^\]]+)\]\s+(?:\[(?<scope>[^\]]+)\]\s+)?(?:\[(?<category>[^\]]+)\]\s+)?(?<message>.*?)(?:\s+\|\s+(?<context>.*))?$/);
+  if (!match?.groups) return null;
+
+  const message = match.groups.message?.trim() ?? "";
+  const lower = message.toLowerCase();
+  let stage: ExecutionStage | null = null;
+  if (lower.includes("trade candidate committed")) stage = "committed";
+  else if (lower.includes("trade blocked") || lower.includes("trade skipped")) stage = "blocked";
+  else if (lower.includes("submitting live order") || lower.includes("order request submitted")) stage = "submitted";
+  else if (lower.includes("live order accepted") || lower.includes("order accepted")) stage = "accepted";
+  else if (lower.includes("rejected") || lower.includes("invalid_order")) stage = "rejected";
+  else if (lower.includes("matched") && lower.includes("fill")) stage = "matched";
+  else if (lower.includes("candidate") && lower.includes("direction")) stage = "candidate";
+
+  if (!stage) return null;
+
+  const context = parseContextPairs(match.groups.context);
+  const timestamp = new Date(match.groups.ts).getTime();
+  const ticker = context.ticker ?? null;
+  const inferredAsset =
+    (match.groups.scope?.replace(/USDT$/, "") ?? null) ||
+    assetFromTicker(ticker);
+  const evRaw = context.evCents ?? null;
+  const entryRaw = context.entryPrice ?? null;
+  const tone: Tone =
+    stage === "accepted" || stage === "matched" ? "green" :
+    stage === "submitted" || stage === "candidate" || stage === "committed" ? "blue" :
+    stage === "blocked" ? "amber" :
+    "red";
+
+  return {
+    id: `${source}-${stage}-${timestamp}-${ticker ?? inferredAsset ?? "unknown"}-${message}`,
+    timestamp,
+    iso: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null,
+    stage,
+    asset: inferredAsset,
+    ticker,
+    message,
+    detail: Object.keys(context).length > 0 ? Object.entries(context).map(([key, value]) => `${key}=${value}`).join(" · ") : message,
+    tone,
+    orderId: context.orderId ?? null,
+    evCents: evRaw != null ? Number(evRaw) : null,
+    entryPrice: entryRaw != null ? Number(entryRaw) : null,
+    source,
+  };
+}
+
+function parseTradeExecutionEvent(trade: Trade): ExecutionEvent {
+  const settled = trade.outcome === "win" || trade.outcome === "loss";
+  return {
+    id: `trade-${trade.id}`,
+    timestamp: trade.entryTimestamp,
+    iso: new Date(trade.entryTimestamp).toISOString(),
+    stage: settled ? "settled" : "accepted",
+    asset: trade.asset,
+    ticker: trade.ticker ?? null,
+    message: settled ? `settled ${trade.outcome}` : "accepted live order",
+    detail: [
+      `entry=${trade.entryPrice}c`,
+      `size=${trade.liveCount ?? trade.suggestedSize}`,
+      `ev=${trade.ev.toFixed(1)}c`,
+      `confidence=${formatPercent(trade.confidence)}`,
+    ].join(" · "),
+    tone: settled ? (trade.pnlTotal != null && trade.pnlTotal >= 0 ? "green" : "red") : "green",
+    orderId: trade.orderId ?? null,
+    evCents: trade.ev,
+    entryPrice: trade.entryPrice,
+    source: "trades",
+  };
+}
+
+function dedupeExecutionEvents(events: ExecutionEvent[]): ExecutionEvent[] {
+  const seen = new Set<string>();
+  const deduped: ExecutionEvent[] = [];
+  for (const event of events) {
+    const signature = `${event.stage}|${event.asset}|${event.ticker}|${event.message}|${event.orderId ?? ""}`;
+    if (seen.has(signature)) continue;
+    seen.add(signature);
+    deduped.push(event);
+  }
+  return deduped;
+}
+
+function tradePnlTotal(trade: Trade): number | null {
+  if (trade.pnlTotal != null) return trade.pnlTotal;
+  if (trade.pnlCents != null && trade.liveCount != null) return trade.pnlCents * trade.liveCount;
+  return trade.pnlCents ?? null;
 }
 
 function isOneSidedBook(worker: BackendStatus["workers"][number]): boolean {
@@ -678,9 +841,9 @@ function WorkerMatrix({ workers }: { workers: BackendStatus["workers"] }) {
                 !worker.marketDataSource ? "blue" :
                 worker.marketDataSource === "kalshi_ws_ticker" ? "green" : "amber";
               const ageTone: Tone =
-                worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 6_000
+                worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.criticalQuoteAgeMs
                   ? "red"
-                  : worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > 3_000
+                  : worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.warningQuoteAgeMs
                     ? "amber"
                     : "green";
               const agePalette = toneValue(ageTone);
@@ -863,7 +1026,9 @@ function RecentFillsPanel({
         <HeroSignal label={`${rows.length} fills · ${windowLabel}`} tone="violet" />
       </div>
 
-      {rows.length === 0 ? (
+      {fills == null ? (
+        <div className="text-sm text-muted">Loading the recent ledger tail from `/api/fills`…</div>
+      ) : rows.length === 0 ? (
         <div className="text-sm text-muted">No fills yet. The ledger table will populate after the first ingested fills.</div>
       ) : (
         <div className="overflow-x-auto">
@@ -928,6 +1093,197 @@ function RecentFillsPanel({
               })}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StickyEscalations({
+  alerts,
+}: {
+  alerts: Escalation[];
+}) {
+  if (alerts.length === 0) return null;
+
+  return (
+    <div className="sticky top-3 z-30 mb-6 flex flex-col gap-3">
+      {alerts.map((alert) => {
+        const palette = toneValue(alert.tone);
+        return (
+          <div
+            key={`${alert.kicker}-${alert.title}`}
+            className="rounded-2xl px-4 py-3 backdrop-blur"
+            style={{
+              background: `linear-gradient(135deg, rgba(15,17,23,0.96), ${palette.background})`,
+              border: `1px solid ${palette.color}40`,
+              boxShadow: "0 18px 30px rgba(2,6,23,0.22)",
+            }}
+          >
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-1">
+                  <HeroSignal label={alert.kicker} tone={alert.tone} />
+                  <span className="text-sm font-semibold text-text">{alert.title}</span>
+                </div>
+                <p className="text-sm text-slate-300">{alert.detail}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ExecutionDrilldown({
+  trades,
+  executionEvents,
+  windowLabel,
+}: {
+  trades: Trade[] | undefined;
+  executionEvents: ExecutionEvent[];
+  windowLabel: string;
+}) {
+  const rows = useMemo(
+    () => [...(trades ?? [])]
+      .filter((trade) => trade.isLive)
+      .sort((a, b) => b.entryTimestamp - a.entryTimestamp)
+      .slice(0, 8),
+    [trades]
+  );
+
+  const pending = rows.filter((trade) => trade.outcome === "pending").length;
+  const settled = rows.filter((trade) => trade.outcome === "win" || trade.outcome === "loss").length;
+  const realizedPnl = rows.reduce((sum, trade) => sum + (tradePnlTotal(trade) ?? 0), 0);
+  const submittedCount = executionEvents.filter((event) => event.stage === "submitted").length;
+  const acceptedCount = executionEvents.filter((event) => event.stage === "accepted" || event.stage === "settled").length;
+  const acceptedRate = submittedCount > 0 ? acceptedCount / submittedCount : null;
+
+  return (
+    <div className="panel overflow-hidden">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="section-label" style={{ marginBottom: 4 }}>Execution Drill-down</p>
+          <p className="text-sm text-muted">Recent live-trade records with the execution funnel grounded in persisted trade rows, not just tail parsing.</p>
+        </div>
+        <HeroSignal label={windowLabel} tone="violet" />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 mb-4">
+        <MetricCard label="Pending Live Trades" value={formatCount(pending)} sub="accepted but not yet settled" tone={pending > 0 ? "amber" : "green"} />
+        <MetricCard label="Settled Trades" value={formatCount(settled)} sub="recent live trades resolved" tone={settled > 0 ? "green" : "blue"} />
+        <MetricCard label="Accepted / Submitted" value={formatPercent(acceptedRate)} sub={submittedCount > 0 ? `${acceptedCount} of ${submittedCount} recent submits` : "waiting for submissions in window"} tone={acceptedRate != null && acceptedRate < 0.5 ? "amber" : "green"} />
+        <MetricCard label="Realized PnL" value={formatCents(realizedPnl)} sub={`${rows.length} recent live trade rows`} tone={realizedPnl < 0 ? "red" : "green"} />
+      </div>
+
+      {trades == null ? (
+        <div className="text-sm text-muted">Loading recent live-trade rows from `/api/trades`…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm text-muted">Live trade rows will appear here once `/api/trades` returns recent executions.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[920px]">
+            <thead>
+              <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                <th className="py-2 font-medium">Entry</th>
+                <th className="py-2 font-medium">Market</th>
+                <th className="py-2 font-medium">Side</th>
+                <th className="py-2 font-medium">Entry</th>
+                <th className="py-2 font-medium">Size</th>
+                <th className="py-2 font-medium">EV</th>
+                <th className="py-2 font-medium">Confidence</th>
+                <th className="py-2 font-medium">Status</th>
+                <th className="py-2 font-medium">P/L</th>
+                <th className="py-2 font-medium">Order</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((trade) => {
+                const pnl = tradePnlTotal(trade);
+                const settledTrade = trade.outcome === "win" || trade.outcome === "loss";
+                return (
+                  <tr key={trade.id} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                    <td className="py-2 text-muted">{formatShortTimestamp(new Date(trade.entryTimestamp).toISOString())}</td>
+                    <td className="py-2">
+                      <div className="flex flex-col">
+                        <span className="font-medium text-text">{trade.asset}</span>
+                        <span className="text-xs text-muted truncate max-w-[15rem]">{trade.ticker ?? "—"}</span>
+                      </div>
+                    </td>
+                    <td className="py-2">
+                      <span className={trade.direction === "yes" ? "badge badge-green" : "badge badge-red"}>
+                        {trade.direction.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="py-2 font-mono text-text">{trade.entryPrice}c</td>
+                    <td className="py-2 font-mono text-muted">{formatCount(trade.liveCount ?? trade.suggestedSize)}</td>
+                    <td className="py-2 font-mono text-text">{`${trade.ev >= 0 ? "+" : ""}${trade.ev.toFixed(1)}c`}</td>
+                    <td className="py-2 font-mono text-text">{formatPercent(trade.confidence)}</td>
+                    <td className="py-2">
+                      <span className={settledTrade ? (trade.outcome === "win" ? "badge badge-green" : "badge badge-red") : "badge badge-amber"}>
+                        {settledTrade ? trade.outcome.toUpperCase() : "PENDING"}
+                      </span>
+                    </td>
+                    <td className="py-2 font-mono" style={{ color: (pnl ?? 0) >= 0 ? "#22C55E" : "#EF4444" }}>
+                      {pnl != null ? formatCents(pnl) : "—"}
+                    </td>
+                    <td className="py-2 font-mono text-xs text-muted">{trade.orderId ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CandidateHistoryPanel({
+  events,
+  windowLabel,
+}: {
+  events: ExecutionEvent[];
+  windowLabel: string;
+}) {
+  return (
+    <div className="panel overflow-hidden">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="section-label" style={{ marginBottom: 4 }}>Candidate History</p>
+          <p className="text-sm text-muted">Recent candidate, block, submit, and accept transitions so you can see whether opportunity is dying in strategy, risk, or execution.</p>
+        </div>
+        <HeroSignal label={`${events.length} events · ${windowLabel}`} tone="blue" />
+      </div>
+
+      {events.length === 0 ? (
+        <div className="text-sm text-muted">No recent execution-relevant events in this window.</div>
+      ) : (
+        <div className="space-y-2">
+          {events.slice(0, 12).map((event) => (
+            <div
+              key={event.id}
+              className="rounded-xl px-3 py-3"
+              style={{ backgroundColor: "rgba(2,6,23,0.45)", border: "1px solid rgba(148,163,184,0.08)" }}
+            >
+              <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 mb-1">
+                    <HeroSignal label={event.stage} tone={event.tone} />
+                    {event.asset ? <span className="text-sm font-semibold text-text">{event.asset}</span> : null}
+                    {event.ticker ? <span className="text-xs font-mono text-muted truncate">{event.ticker}</span> : null}
+                  </div>
+                  <p className="text-sm text-slate-200">{event.message}</p>
+                  <p className="text-xs text-muted mt-1">{event.detail}</p>
+                </div>
+                <div className="flex flex-col items-start xl:items-end gap-1 text-xs text-muted">
+                  <span>{formatRelativeMoment(event.iso)}</span>
+                  <span className="font-mono">{event.source}</span>
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1076,47 +1432,87 @@ export default function OperatorConsoleClient({
 }) {
   const [opsWindow, setOpsWindow] = useState<OpsWindow>("15m");
   const [ledgerWindow, setLedgerWindow] = useState<LedgerWindow>("today");
+  const [loadDeepData, setLoadDeepData] = useState(false);
+
+  useEffect(() => {
+    setLoadDeepData(true);
+  }, []);
 
   const { data: health } = useSWR<BackendHealth>("backend-health", getHealth, {
-    refreshInterval: REFRESH_MS,
+    refreshInterval: CORE_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 4_000,
     fallbackData: initialData?.health,
   });
   const { data: status } = useSWR<BackendStatus | null>("backend-status", getStatus, {
-    refreshInterval: REFRESH_MS,
+    refreshInterval: CORE_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 4_000,
     fallbackData: initialData?.status,
   });
   const { data: analytics } = useSWR<FillAnalytics>("dashboard-analytics", getAnalytics, {
-    refreshInterval: REFRESH_MS,
+    refreshInterval: ANALYTICS_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 10_000,
     fallbackData: initialData?.analytics,
   });
-  const { data: liveBalance } = useSWR<AccountBalance>("kalshi-balance", getBalance, {
-    refreshInterval: REFRESH_MS,
+  const { data: liveBalance } = useSWR<AccountBalance>(loadDeepData ? "kalshi-balance" : null, getBalance, {
+    refreshInterval: BALANCE_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 10_000,
     fallbackData: initialData?.liveBalance,
   });
-  const { data: paperBalance } = useSWR<PaperBalance>("paper-balance", getPaperBalance, {
-    refreshInterval: REFRESH_MS,
+  const { data: paperBalance } = useSWR<PaperBalance>(loadDeepData ? "paper-balance" : null, getPaperBalance, {
+    refreshInterval: PAPER_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 15_000,
     fallbackData: initialData?.paperBalance,
   });
-  const { data: paperStats } = useSWR<Stats>("paper-stats", getPaperStats, {
-    refreshInterval: REFRESH_MS,
+  const { data: paperStats } = useSWR<Stats>(loadDeepData ? "paper-stats" : null, getPaperStats, {
+    refreshInterval: PAPER_REFRESH_MS,
     revalidateOnFocus: false,
+    keepPreviousData: true,
+    dedupingInterval: 15_000,
     fallbackData: initialData?.paperStats,
   });
-  const { data: fills } = useSWR<KalshiFill[]>("kalshi-fills", getFills, {
-    refreshInterval: REFRESH_MS,
-    revalidateOnFocus: false,
-    fallbackData: initialData?.fills,
-  });
-  const { data: logs } = useSWR<LogsResponse>("backend-logs", getLogs, {
-    refreshInterval: REFRESH_MS,
-    revalidateOnFocus: false,
-    fallbackData: initialData?.logs,
-  });
+  const { data: fills } = useSWR<KalshiFill[]>(
+    loadDeepData ? ["kalshi-fills", FILL_LIMIT] : null,
+    () => getFills({ limit: FILL_LIMIT }),
+    {
+      refreshInterval: FILL_REFRESH_MS,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 15_000,
+      fallbackData: initialData?.fills,
+    }
+  );
+  const { data: logs } = useSWR<LogsResponse>(
+    loadDeepData ? ["backend-logs", LOG_LIMIT] : null,
+    () => getLogs({ limit: LOG_LIMIT }),
+    {
+      refreshInterval: LOG_REFRESH_MS,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 10_000,
+      fallbackData: initialData?.logs,
+    }
+  );
+  const { data: trades } = useSWR<Trade[]>(
+    loadDeepData ? ["live-trades", TRADE_LIMIT] : null,
+    () => getTradesWithOptions({ limit: TRADE_LIMIT }),
+    {
+      refreshInterval: TRADE_REFRESH_MS,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 10_000,
+      fallbackData: initialData?.trades,
+    }
+  );
 
   const operator = useMemo(() => deriveOperatorState(health, status), [health, status]);
   const summary = analytics?.summary;
@@ -1144,6 +1540,21 @@ export default function OperatorConsoleClient({
     () => (logs?.logs ?? []).filter((line) => inOpsWindow(line, opsWindow)),
     [logs?.logs, opsWindow]
   );
+  const opsTrades = useMemo(
+    () => (trades ?? []).filter((trade) => inOpsWindow(new Date(trade.entryTimestamp).toISOString(), opsWindow)),
+    [trades, opsWindow]
+  );
+  const executionEvents = useMemo(() => {
+    const parsed = [
+      ...opsRecentEvents.map((line) => parseExecutionLine(line, "status")),
+      ...opsLogLines.map((line) => parseExecutionLine(line, "logs")),
+      ...opsTrades.map(parseTradeExecutionEvent),
+    ].filter((event): event is ExecutionEvent => event != null);
+
+    return dedupeExecutionEvents(
+      parsed.sort((a, b) => b.timestamp - a.timestamp)
+    );
+  }, [opsRecentEvents, opsLogLines, opsTrades]);
   const fillsSectionSummary = useMemo(() => {
     if (ledgerWindow === "all" && summary) return summary;
     const fallback = summarizeFills(ledgerFills);
@@ -1197,10 +1608,13 @@ export default function OperatorConsoleClient({
     }
 
     const orderableCount = workers.filter((worker) => worker.hasValidAsk).length;
-    const recentlyCommittedCount = workers.filter((worker) => worker.lastCommittedCandidateAt != null).length;
+    const recentlyCommittedCount = workers.filter((worker) =>
+      worker.lastCommittedCandidateAt != null &&
+      inOpsWindow(String(worker.lastCommittedCandidateAt), opsWindow)
+    ).length;
 
     return { counts, orderableCount, recentlyCommittedCount };
-  }, [workers]);
+  }, [workers, opsWindow]);
   const executionFunnel = useMemo<StageMetric[]>(() => {
     const candidateCount = workers.filter((worker) => worker.candidateDirection != null).length;
     const committedCount = workers.filter((worker) =>
@@ -1210,21 +1624,20 @@ export default function OperatorConsoleClient({
     const submittedCount =
       countMatches(opsRecentEvents, /submitting live order|order request submitted/i) +
       countMatches(opsLogLines, /submitting live order|order request submitted/i);
-    const acceptedCount =
-      countMatches(opsRecentEvents, /live order accepted|order accepted/i) +
-      countMatches(opsLogLines, /live order accepted|order accepted/i);
+    const acceptedCount = opsTrades.length;
+    const settledCount = opsTrades.filter((trade) => trade.outcome === "win" || trade.outcome === "loss").length;
 
     return [
       { label: "Orderable", value: blockerSummary.orderableCount, tone: blockerSummary.orderableCount > 0 ? "green" : "amber", sub: "workers with valid asks" },
       { label: "Candidate", value: candidateCount, tone: candidateCount > 0 ? "blue" : "amber", sub: "workers with a candidate side" },
       { label: "Committed", value: committedCount, tone: committedCount > 0 ? "green" : "blue", sub: "recent committed candidates" },
       { label: "Submitted", value: submittedCount, tone: submittedCount > 0 ? "green" : "blue", sub: "live submissions seen in logs" },
-      { label: "Accepted", value: acceptedCount, tone: acceptedCount > 0 ? "green" : "blue", sub: "live accepts in logs" },
+      { label: "Accepted", value: acceptedCount, tone: acceptedCount > 0 ? "green" : "blue", sub: "persisted live trade rows" },
       { label: "Filled", value: opsFills.length, tone: opsFills.length > 0 ? "green" : "blue", sub: "fills created in window" },
       { label: "Matched", value: opsFills.filter((fill) => !!fill.paper_trade_id).length, tone: opsFills.some((fill) => !!fill.paper_trade_id) ? "green" : "amber", sub: "fills linked to trades" },
-      { label: "Settled", value: opsFills.filter((fill) => fill.outcome === "win" || fill.outcome === "loss").length, tone: opsFills.some((fill) => fill.outcome === "win" || fill.outcome === "loss") ? "green" : "blue", sub: "resolved fills in window" },
+      { label: "Settled", value: settledCount, tone: settledCount > 0 ? "green" : "blue", sub: "resolved live trades in window" },
     ];
-  }, [workers, blockerSummary.orderableCount, opsRecentEvents, opsLogLines, opsFills, opsWindow]);
+  }, [workers, blockerSummary.orderableCount, opsRecentEvents, opsLogLines, opsFills, opsTrades, opsWindow]);
   const anomalySummary = useMemo<StageMetric[]>(() => {
     const rejectedOrders = countMatches(opsRecentEvents, /rejected|invalid_order/i) + countMatches(opsLogLines, /rejected|invalid_order/i);
     const dataWarnings = countMatches(opsRecentEvents, /market_data_unavailable|top[- ]of[- ]book|missing ask|crypto_unavailable/i)
@@ -1233,7 +1646,7 @@ export default function OperatorConsoleClient({
     const oneSidedBooks = workers.filter(isOneSidedBook).length;
 
     return [
-      { label: "Stale Quotes", value: workers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > 6_000).length, tone: workers.some((worker) => (worker.cryptoPriceAgeMs ?? 0) > 6_000) ? "red" : "green", sub: "workers above 6s quote age" },
+      { label: "Stale Quotes", value: workers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs).length, tone: workers.some((worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs) ? "red" : "green", sub: `workers above ${ALERT_THRESHOLDS.criticalQuoteAgeMs / 1000}s quote age` },
       { label: "Rejected Orders", value: rejectedOrders, tone: rejectedOrders > 0 ? "red" : "green", sub: "recent accepts vs rejects risk" },
       { label: "Data Warnings", value: dataWarnings, tone: dataWarnings > 0 ? "amber" : "green", sub: "crypto or market-data incidents" },
       { label: "One-sided Books", value: oneSidedBooks, tone: oneSidedBooks > 0 ? "amber" : "green", sub: "extreme top-of-book structure" },
@@ -1241,24 +1654,114 @@ export default function OperatorConsoleClient({
       { label: "Reconciliation", value: reconciliationWarnings, tone: reconciliationWarnings > 0 ? "amber" : "green", sub: "recent reconcile mentions" },
     ];
   }, [opsRecentEvents, opsLogLines, workers]);
+  const opsWindowLabel = opsWindow === "15m" ? "Last 15m" : opsWindow === "1h" ? "Last 1h" : "Last 24h";
+  const ledgerWindowLabel = ledgerWindow === "today" ? "Today" : ledgerWindow === "7d" ? "Last 7d" : "All time";
+  const escalations = useMemo<Escalation[]>(() => {
+    const staleWorkers = workers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs).length;
+    const fallbackWorkers = workers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker").length;
+    const oneSidedBooks = workers.filter(isOneSidedBook).length;
+    const rejectedOrders = executionEvents.filter((event) => event.stage === "rejected").length;
+    const submittedOrders = executionEvents.filter((event) => event.stage === "submitted").length;
+    const acceptedOrders = executionEvents.filter((event) => event.stage === "accepted" || event.stage === "settled").length;
+    const committedEvents = executionEvents.filter((event) => event.stage === "committed").length;
+    const dataWarnings = anomalySummary.find((item) => item.label === "Data Warnings")?.value ?? 0;
+    const items: Escalation[] = [];
+
+    if (operator.label === "NO-GO" || operator.label === "CAUTION") {
+      items.push({
+        kicker: operator.label === "NO-GO" ? "NO-GO" : "CAUTION",
+        title: operator.label === "NO-GO" ? "System trust is degraded" : "System trust needs attention",
+        detail: operator.reasons.join(" · "),
+        tone: operator.tone,
+      });
+    }
+    if (blockerSummary.orderableCount === 0) {
+      items.push({
+        kicker: "ORDER FLOW",
+        title: "No workers are orderable right now",
+        detail: "The engine can scan, but none of the workers currently have a trustworthy path to an orderable entry.",
+        tone: "red",
+      });
+    }
+    if (staleWorkers > 0) {
+      items.push({
+        kicker: "QUOTE AGE",
+        title: `${staleWorkers} worker${staleWorkers === 1 ? "" : "s"} above ${ALERT_THRESHOLDS.criticalQuoteAgeMs / 1000}s quote age`,
+        detail: "Crypto freshness is outside the trust threshold. Treat execution as unsafe until quote ages recover.",
+        tone: "red",
+      });
+    }
+    if (rejectedOrders >= ALERT_THRESHOLDS.rejectedOrdersInWindow) {
+      items.push({
+        kicker: "EXECUTION",
+        title: `${rejectedOrders} live order reject${rejectedOrders === 1 ? "" : "s"} in ${opsWindowLabel.toLowerCase()}`,
+        detail: "Recent rejections mean the live path is not behaving cleanly. Check the execution drill-down before trusting new submissions.",
+        tone: "red",
+      });
+    }
+    if (committedEvents >= ALERT_THRESHOLDS.executionGapCommits && submittedOrders === 0 && (status?.positionTracker.active ?? 0) === 0) {
+      items.push({
+        kicker: "EXECUTION GAP",
+        title: "Committed candidates are not reaching submission",
+        detail: `${committedEvents} committed candidate${committedEvents === 1 ? "" : "s"} in ${opsWindowLabel.toLowerCase()} but no order submissions were observed.`,
+        tone: "amber",
+      });
+    }
+    if (submittedOrders > 0 && acceptedOrders === 0) {
+      items.push({
+        kicker: "CONVERSION",
+        title: "Submissions are not converting to accepted trades",
+        detail: `${submittedOrders} submitted with 0 accepted in ${opsWindowLabel.toLowerCase()}. Check rejects, payload validity, and fill linkage.`,
+        tone: "amber",
+      });
+    }
+    if (fallbackWorkers >= ALERT_THRESHOLDS.fallbackWorkers) {
+      items.push({
+        kicker: "MARKET DATA",
+        title: `${fallbackWorkers} worker${fallbackWorkers === 1 ? "" : "s"} on fallback market source`,
+        detail: "A fallback source is okay briefly, but it should not be the dominant state for live execution.",
+        tone: "amber",
+      });
+    }
+    if (oneSidedBooks >= ALERT_THRESHOLDS.oneSidedBooks) {
+      items.push({
+        kicker: "BOOK QUALITY",
+        title: `${oneSidedBooks} one-sided book${oneSidedBooks === 1 ? "" : "s"} active`,
+        detail: "Quotes may technically be orderable while still being operationally fragile. Watch spreads and fake availability.",
+        tone: "amber",
+      });
+    }
+    if (dataWarnings >= ALERT_THRESHOLDS.dataWarnings) {
+      items.push({
+        kicker: "DATA WARN",
+        title: `${dataWarnings} market or crypto data warnings in ${opsWindowLabel.toLowerCase()}`,
+        detail: "Repeated data warnings are usually the earliest sign that trust is degrading before the top strip flips to NO-GO.",
+        tone: "amber",
+      });
+    }
+
+    return items.slice(0, 3);
+  }, [workers, executionEvents, anomalySummary, blockerSummary.orderableCount, operator, opsWindowLabel, status?.positionTracker.active]);
   const opportunity = useMemo(
     () => deriveOpportunityState(operator, workers, blockerSummary, status?.positionTracker),
     [operator, workers, blockerSummary, status?.positionTracker]
   );
   const latestWarning = useMemo(
-    () => (logs?.logs ?? []).slice().reverse().find((line) => {
-      const upper = line.toUpperCase();
-      return upper.includes("REJECT") || upper.includes("INVALID_ORDER") || upper.includes("ERROR") || upper.includes("WARN");
-    }) ?? null,
-    [logs]
+    () => {
+      const logWarning = (logs?.logs ?? []).slice().reverse().find((line) => {
+        const upper = line.toUpperCase();
+        return upper.includes("REJECT") || upper.includes("INVALID_ORDER") || upper.includes("ERROR") || upper.includes("WARN");
+      });
+      if (logWarning) return logWarning;
+      return executionEvents.find((event) => event.stage === "blocked" || event.stage === "rejected")?.message ?? null;
+    },
+    [logs, executionEvents]
   );
   const settledSample = sampleMeta(fillsSectionSummary?.settledFills, "settled fills");
   const linkedSample = sampleMeta(fillsSectionSummary?.matchedFills, "linked fills");
   const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
   const sessionSettledSample = sampleMeta(sessionSummary?.settledFills, "session settled fills");
   const sessionLinkedSample = sampleMeta(sessionSummary?.matchedFills, "session linked fills");
-  const opsWindowLabel = opsWindow === "15m" ? "Last 15m" : opsWindow === "1h" ? "Last 1h" : "Last 24h";
-  const ledgerWindowLabel = ledgerWindow === "today" ? "Today" : ledgerWindow === "7d" ? "Last 7d" : "All time";
 
   return (
     <main
@@ -1321,7 +1824,7 @@ export default function OperatorConsoleClient({
                 label="Worst Quote Age"
                 value={formatPriceAge(slowestWorkerAge)}
                 sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
-                tone={slowestWorkerAge != null && slowestWorkerAge > 6_000 ? "red" : "blue"}
+                tone={slowestWorkerAge != null && slowestWorkerAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : "blue"}
                 icon={<Waves size={14} />}
               />
               <MetricCard
@@ -1358,6 +1861,8 @@ export default function OperatorConsoleClient({
             </div>
           ) : null}
         </section>
+
+        <StickyEscalations alerts={escalations} />
 
         <section className="mb-8">
           <SectionHeading
@@ -1434,6 +1939,29 @@ export default function OperatorConsoleClient({
             <AnomalySummary anomalies={anomalySummary} windowLabel={opsWindowLabel} />
           </div>
           <WorkerMatrix workers={workers} />
+        </section>
+
+        <section className="mb-8">
+          <SectionHeading
+            kicker="Execution Path"
+            title="Execution drill-down and candidate history"
+            subtitle="This is the handoff from strategy to live execution: recent trade rows confirm what was accepted, and the candidate history shows where ideas were blocked, submitted, or rejected."
+            actions={
+              <FilterChipBar
+                value={opsWindow}
+                onChange={setOpsWindow}
+                options={[
+                  { value: "15m", label: "Last 15m" },
+                  { value: "1h", label: "Last 1h" },
+                  { value: "24h", label: "Last 24h" },
+                ]}
+              />
+            }
+          />
+          <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+            <ExecutionDrilldown trades={opsTrades} executionEvents={executionEvents} windowLabel={opsWindowLabel} />
+            <CandidateHistoryPanel events={executionEvents} windowLabel={opsWindowLabel} />
+          </div>
         </section>
 
         <section className="mb-8">

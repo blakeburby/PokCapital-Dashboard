@@ -309,10 +309,25 @@ export async function getTrades(): Promise<Trade[]> {
   return raw.map(normalizeTrade);
 }
 
-export async function getLogs(): Promise<LogsResponse> {
+export async function getTradesWithOptions(options?: { asset?: string; limit?: number }): Promise<Trade[]> {
+  const params = new URLSearchParams();
+  if (options?.asset) params.set("asset", options.asset);
+  if (options?.limit != null) params.set("limit", String(options.limit));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await timedFetch(`/api/trades${query}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`/api/trades returned ${res.status}`);
+  const raw = await res.json();
+  if (!Array.isArray(raw)) return [];
+  return raw.map(normalizeTrade);
+}
+
+export async function getLogs(options?: { limit?: number }): Promise<LogsResponse> {
   const empty: LogsResponse = { logs: [], meta: { count: 0, lastTimestamp: null } };
   try {
-    const res = await timedFetch("/api/logs", { cache: "no-store" });
+    const params = new URLSearchParams();
+    if (options?.limit != null) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const res = await timedFetch(`/api/logs${query}`, { cache: "no-store" });
     if (!res.ok) return empty;
     const data = await res.json();
 
@@ -344,8 +359,11 @@ export async function getBalance(): Promise<AccountBalance> {
   return res.json();
 }
 
-export async function getFills(): Promise<KalshiFill[]> {
-  const res = await timedFetch("/api/fills", { cache: "no-store" });
+export async function getFills(options?: { limit?: number }): Promise<KalshiFill[]> {
+  const params = new URLSearchParams();
+  if (options?.limit != null) params.set("limit", String(options.limit));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  const res = await timedFetch(`/api/fills${query}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/fills returned ${res.status}`);
   return res.json();
 }
