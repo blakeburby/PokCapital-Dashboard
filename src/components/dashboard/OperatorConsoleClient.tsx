@@ -29,7 +29,9 @@ import {
 import BackendStatusPanel from "@/components/BackendStatusPanel";
 import RealAccountChart from "@/components/RealAccountChart";
 import {
+  clearAlertPreference,
   deriveFillNetPnlCents,
+  getAlertPreferences,
   getAnalytics,
   getBalance,
   getFillPriceCents,
@@ -41,6 +43,7 @@ import {
   getStatus,
   getTradesWithOptions,
   type AccountBalance,
+  type AlertPreference,
   type BackendHealth,
   type BackendStatus,
   type BreakdownRow,
@@ -50,6 +53,7 @@ import {
   type PaperBalance,
   type Stats,
   type Trade,
+  upsertAlertPreference,
 } from "@/lib/api";
 
 const CORE_REFRESH_MS = 10_000;
@@ -63,7 +67,6 @@ const FILL_LIMIT = 180;
 const LOG_LIMIT = 220;
 const TRADE_LIMIT = 40;
 const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
-const ALERT_PREFS_STORAGE_KEY = "pok-dashboard-alert-prefs-v1";
 const ALERT_THRESHOLDS = {
   warningQuoteAgeMs: 3_000,
   criticalQuoteAgeMs: 6_000,
@@ -199,13 +202,13 @@ type ExecutionStage =
   | "rejected"
   | "matched"
   | "settled";
+type FillLinkKind = "order" | "trade" | "inferred";
 type Escalation = {
   title: string;
   detail: string;
   tone: Tone;
   kicker: string;
 };
-type AlertPrefs = Record<string, { acknowledged?: boolean; muteUntil?: number }>;
 
 interface FillSummarySnapshot {
   totalFills: number;
@@ -584,6 +587,14 @@ function linkedFillsForTrade(trade: Trade, fills: KalshiFill[]): KalshiFill[] {
   });
 
   return rows.sort((a, b) => new Date(a.created_time).getTime() - new Date(b.created_time).getTime());
+}
+
+function classifyFillLinkForTrade(trade: Trade, fill: KalshiFill): FillLinkKind | null {
+  const entryWindowMs = 20 * 60_000;
+  if (trade.orderId && fill.order_id === trade.orderId) return "order";
+  if (fill.paper_trade_id === trade.id) return "trade";
+  if (!trade.ticker || fill.ticker !== trade.ticker) return null;
+  return Math.abs(new Date(fill.created_time).getTime() - trade.entryTimestamp) <= entryWindowMs ? "inferred" : null;
 }
 
 function linkedEventsForTrade(trade: Trade, events: ExecutionEvent[]): ExecutionEvent[] {
@@ -1187,71 +1198,97 @@ function StickyEscalations({
 }: {
   alerts: Escalation[];
 }) {
-  const [prefs, setPrefs] = useState<AlertPrefs>({});
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(ALERT_PREFS_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as AlertPrefs;
-      setPrefs(parsed);
-    } catch {
-      setPrefs({});
+  const { data: storedPrefs = [], mutate } = useSWR<AlertPreference[]>(
+    "alert-preferences",
+    getAlertPreferences,
+    {
+      refreshInterval: 15_000,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 5_000,
     }
-  }, []);
+  );
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(ALERT_PREFS_STORAGE_KEY, JSON.stringify(prefs));
-    } catch {
-      // ignore storage failures; alerts should still render
-    }
-  }, [prefs]);
+  const prefMap = useMemo(
+    () =>
+      storedPrefs.reduce<Record<string, AlertPreference>>((acc, item) => {
+        acc[item.key] = item;
+        return acc;
+      }, {}),
+    [storedPrefs]
+  );
 
   useEffect(() => {
     const activeKeys = new Set(alerts.map(alertKey));
-    setPrefs((current) => {
-      let changed = false;
-      const now = Date.now();
-      const next: AlertPrefs = {};
-      for (const [key, value] of Object.entries(current)) {
-        const muteUntil = value.muteUntil && value.muteUntil > now ? value.muteUntil : undefined;
-        const acknowledged = value.acknowledged && activeKeys.has(key) ? true : undefined;
-        if (muteUntil || acknowledged) {
-          next[key] = { ...(muteUntil ? { muteUntil } : {}), ...(acknowledged ? { acknowledged } : {}) };
-          if (muteUntil !== value.muteUntil || acknowledged !== value.acknowledged) changed = true;
-        } else if (value.muteUntil || value.acknowledged) {
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-  }, [alerts]);
+    const staleKeys = storedPrefs
+      .filter((pref) => pref.acknowledged && !activeKeys.has(pref.key))
+      .map((pref) => pref.key);
+
+    if (staleKeys.length === 0) return;
+
+    let cancelled = false;
+    void (async () => {
+      await Promise.all(staleKeys.map((key) => clearAlertPreference(key).catch(() => undefined)));
+      if (!cancelled) await mutate();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [alerts, storedPrefs, mutate]);
 
   const now = Date.now();
   const visibleAlerts = alerts.filter((alert) => {
-    const pref = prefs[alertKey(alert)];
+    const pref = prefMap[alertKey(alert)];
     if (pref?.acknowledged) return false;
-    if (pref?.muteUntil && pref.muteUntil > now) return false;
+    if (pref?.muteUntil && new Date(pref.muteUntil).getTime() > now) return false;
     return true;
   });
   const mutedAlerts = alerts.filter((alert) => {
-    const muteUntil = prefs[alertKey(alert)]?.muteUntil;
-    return muteUntil != null && muteUntil > now;
+    const muteUntil = prefMap[alertKey(alert)]?.muteUntil;
+    return muteUntil != null && new Date(muteUntil).getTime() > now;
   });
-  const acknowledgedAlerts = alerts.filter((alert) => prefs[alertKey(alert)]?.acknowledged);
+  const acknowledgedAlerts = alerts.filter((alert) => prefMap[alertKey(alert)]?.acknowledged);
 
-  const updateAlertPref = (key: string, next: Partial<AlertPrefs[string]>) => {
-    setPrefs((current) => ({
-      ...current,
-      [key]: {
-        ...current[key],
-        ...next,
+  const updateAlertPref = async (
+    key: string,
+    next: { acknowledged?: boolean; muteUntil?: number | null }
+  ) => {
+    const optimistic: AlertPreference[] = [
+      ...storedPrefs.filter((pref) => pref.key !== key),
+      {
+        key,
+        acknowledged: next.acknowledged === true,
+        muteUntil:
+          next.muteUntil != null
+            ? new Date(next.muteUntil).toISOString()
+            : null,
+        updatedAt: new Date().toISOString(),
       },
-    }));
+    ].filter((pref) => pref.acknowledged || pref.muteUntil != null);
+
+    await mutate(optimistic, { revalidate: false });
+    try {
+      await upsertAlertPreference({
+        key,
+        acknowledged: next.acknowledged === true,
+        muteUntil: next.muteUntil != null ? new Date(next.muteUntil).toISOString() : null,
+      });
+      await mutate();
+    } catch {
+      await mutate();
+    }
   };
 
-  const clearAllOverrides = () => setPrefs({});
+  const clearAllOverrides = async () => {
+    await mutate([], { revalidate: false });
+    try {
+      await clearAlertPreference();
+      await mutate([], { revalidate: false });
+    } catch {
+      await mutate();
+    }
+  };
 
   if (alerts.length === 0 && mutedAlerts.length === 0 && acknowledgedAlerts.length === 0) return null;
 
@@ -1277,7 +1314,10 @@ function StickyEscalations({
                   {new Date(
                     Math.min(
                       ...mutedAlerts
-                        .map((alert) => prefs[alertKey(alert)]?.muteUntil ?? Number.POSITIVE_INFINITY)
+                        .map((alert) => {
+                          const muteUntil = prefMap[alertKey(alert)]?.muteUntil;
+                          return muteUntil ? new Date(muteUntil).getTime() : Number.POSITIVE_INFINITY;
+                        })
                         .filter((value): value is number => Number.isFinite(value))
                     )
                   ).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
@@ -1325,7 +1365,7 @@ function StickyEscalations({
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
-                  onClick={() => updateAlertPref(key, { acknowledged: true })}
+                  onClick={() => { void updateAlertPref(key, { acknowledged: true, muteUntil: null }); }}
                   className="badge transition-colors"
                   style={{
                     backgroundColor: "rgba(15,23,42,0.65)",
@@ -1338,7 +1378,7 @@ function StickyEscalations({
                 </button>
                 <button
                   type="button"
-                  onClick={() => updateAlertPref(key, { muteUntil: Date.now() + 15 * 60_000 })}
+                  onClick={() => { void updateAlertPref(key, { acknowledged: false, muteUntil: Date.now() + 15 * 60_000 }); }}
                   className="badge transition-colors"
                   style={{
                     backgroundColor: "rgba(15,23,42,0.65)",
@@ -1351,7 +1391,7 @@ function StickyEscalations({
                 </button>
                 <button
                   type="button"
-                  onClick={() => updateAlertPref(key, { muteUntil: Date.now() + 60 * 60_000 })}
+                  onClick={() => { void updateAlertPref(key, { acknowledged: false, muteUntil: Date.now() + 60 * 60_000 }); }}
                   className="badge transition-colors"
                   style={{
                     backgroundColor: "rgba(15,23,42,0.65)",
@@ -1417,6 +1457,96 @@ function ExecutionDrilldown({
     () => (selectedTrade ? linkedEventsForTrade(selectedTrade, executionEvents) : []),
     [selectedTrade, executionEvents]
   );
+  const reconciliation = useMemo(() => {
+    if (!selectedTrade) {
+      return {
+        expectedCount: 0,
+        filledCount: 0,
+        orderLinked: 0,
+        tradeLinked: 0,
+        inferred: 0,
+        coverageTone: "amber" as Tone,
+        coverageLabel: "open",
+        settlementTone: "amber" as Tone,
+        settlementLabel: "awaiting trade",
+        pnlTone: "blue" as Tone,
+        pnlLabel: "awaiting pnl check",
+      };
+    }
+
+    const expectedCount = selectedTrade.liveCount ?? selectedTrade.suggestedSize ?? 0;
+    const filledCount = selectedTradeFills.reduce((sum, fill) => sum + (fill.count ?? 0), 0);
+    const linkCounts = selectedTradeFills.reduce(
+      (acc, fill) => {
+        const kind = classifyFillLinkForTrade(selectedTrade, fill);
+        if (kind) acc[kind] += 1;
+        return acc;
+      },
+      { order: 0, trade: 0, inferred: 0 }
+    );
+    const settledFills = selectedTradeFills.filter((fill) => fill.outcome === "win" || fill.outcome === "loss");
+    const fillNetTotal = settledFills.reduce(
+      (sum, fill) => sum + (deriveFillNetPnlCents(fill, fill.outcome) ?? 0),
+      0
+    );
+    const tradeNet = tradePnlTotal(selectedTrade);
+
+    let coverageTone: Tone = "amber";
+    let coverageLabel = "open";
+    if (filledCount > 0 && expectedCount > 0 && filledCount >= expectedCount) {
+      coverageTone = "green";
+      coverageLabel = "full";
+    } else if (filledCount > 0) {
+      coverageTone = "amber";
+      coverageLabel = "partial";
+    }
+
+    let settlementTone: Tone = "amber";
+    let settlementLabel = "pending";
+    if (selectedTrade.outcome === "pending") {
+      settlementLabel = settledFills.length > 0 ? "fills settled first" : "pending";
+      settlementTone = settledFills.length > 0 ? "amber" : "blue";
+    } else if (settledFills.length === 0) {
+      settlementLabel = "trade settled / fills open";
+      settlementTone = "amber";
+    } else if (settledFills.some((fill) => fill.outcome !== selectedTrade.outcome)) {
+      settlementLabel = "outcome mismatch";
+      settlementTone = "red";
+    } else {
+      settlementLabel = "settlement aligned";
+      settlementTone = "green";
+    }
+
+    let pnlTone: Tone = "blue";
+    let pnlLabel = "awaiting pnl check";
+    if (tradeNet != null && settledFills.length > 0) {
+      const drift = tradeNet - fillNetTotal;
+      if (Math.abs(drift) <= 1) {
+        pnlTone = "green";
+        pnlLabel = "p/l aligned";
+      } else {
+        pnlTone = "red";
+        pnlLabel = `p/l drift ${formatCents(drift)}`;
+      }
+    } else if (tradeNet != null) {
+      pnlTone = "amber";
+      pnlLabel = "trade only";
+    }
+
+    return {
+      expectedCount,
+      filledCount,
+      orderLinked: linkCounts.order,
+      tradeLinked: linkCounts.trade,
+      inferred: linkCounts.inferred,
+      coverageTone,
+      coverageLabel,
+      settlementTone,
+      settlementLabel,
+      pnlTone,
+      pnlLabel,
+    };
+  }, [selectedTrade, selectedTradeEvents, selectedTradeFills]);
 
   return (
     <div className="panel overflow-hidden">
@@ -1548,6 +1678,15 @@ function ExecutionDrilldown({
             </div>
           </div>
 
+          <div className="flex flex-wrap gap-2 mb-4">
+            <HeroSignal label={`coverage ${reconciliation.filledCount}/${reconciliation.expectedCount || 0} · ${reconciliation.coverageLabel}`} tone={reconciliation.coverageTone} />
+            <HeroSignal label={`order-linked ${reconciliation.orderLinked}`} tone={reconciliation.orderLinked > 0 ? "green" : "amber"} />
+            <HeroSignal label={`trade-linked ${reconciliation.tradeLinked}`} tone={reconciliation.tradeLinked > 0 ? "green" : "amber"} />
+            <HeroSignal label={`inferred ${reconciliation.inferred}`} tone={reconciliation.inferred > 0 ? "amber" : "blue"} />
+            <HeroSignal label={reconciliation.settlementLabel} tone={reconciliation.settlementTone} />
+            <HeroSignal label={reconciliation.pnlLabel} tone={reconciliation.pnlTone} />
+          </div>
+
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6 mb-4">
             <MetricCard label="Entry" value={`${selectedTrade.entryPrice}c`} sub={selectedTrade.direction.toUpperCase()} tone={selectedTrade.direction === "yes" ? "green" : "red"} />
             <MetricCard label="Size" value={formatCount(selectedTrade.liveCount ?? selectedTrade.suggestedSize)} sub="live or suggested count" tone="blue" />
@@ -1652,7 +1791,22 @@ function CandidateHistoryPanel({
   events: ExecutionEvent[];
   windowLabel: string;
 }) {
-  const groups = useMemo(() => groupExecutionEvents(events).slice(0, 8), [events]);
+  const [assetFilter, setAssetFilter] = useState<string>("all");
+  const [stageFilter, setStageFilter] = useState<"all" | ExecutionStage>("all");
+  const assetOptions = useMemo(
+    () => ["all", ...new Set(events.map((event) => event.asset).filter((asset): asset is string => !!asset))],
+    [events]
+  );
+  const filteredEvents = useMemo(
+    () =>
+      events.filter((event) => {
+        if (assetFilter !== "all" && event.asset !== assetFilter) return false;
+        if (stageFilter !== "all" && event.stage !== stageFilter) return false;
+        return true;
+      }),
+    [events, assetFilter, stageFilter]
+  );
+  const groups = useMemo(() => groupExecutionEvents(filteredEvents).slice(0, 8), [filteredEvents]);
 
   return (
     <div className="panel overflow-hidden">
@@ -1664,7 +1818,33 @@ function CandidateHistoryPanel({
         <HeroSignal label={`${groups.length} tickers · ${windowLabel}`} tone="blue" />
       </div>
 
-      {events.length === 0 ? (
+      <div className="flex flex-col gap-3 mb-4">
+        <FilterChipBar
+          value={assetFilter}
+          onChange={setAssetFilter}
+          options={assetOptions.map((asset) => ({
+            value: asset,
+            label: asset === "all" ? "All assets" : asset,
+          }))}
+        />
+        <FilterChipBar
+          value={stageFilter}
+          onChange={setStageFilter}
+          options={[
+            { value: "all", label: "All stages" },
+            { value: "candidate", label: "Candidate" },
+            { value: "committed", label: "Committed" },
+            { value: "blocked", label: "Blocked" },
+            { value: "submitted", label: "Submitted" },
+            { value: "accepted", label: "Accepted" },
+            { value: "rejected", label: "Rejected" },
+            { value: "matched", label: "Matched" },
+            { value: "settled", label: "Settled" },
+          ]}
+        />
+      </div>
+
+      {filteredEvents.length === 0 ? (
         <div className="text-sm text-muted">No recent execution-relevant events in this window.</div>
       ) : (
         <div className="space-y-2">

@@ -150,6 +150,13 @@ export interface LogsResponse {
   meta: LogsMeta;
 }
 
+export interface AlertPreference {
+  key: string;
+  acknowledged: boolean;
+  muteUntil: string | null;
+  updatedAt: string;
+}
+
 // ─── Backend Status (per-worker observability) ────────────────────────────────
 
 export interface WorkerSnapshot {
@@ -351,6 +358,42 @@ export async function getLogs(options?: { limit?: number }): Promise<LogsRespons
   } catch {
     return empty;
   }
+}
+
+export async function getAlertPreferences(): Promise<AlertPreference[]> {
+  try {
+    const res = await timedFetch("/api/alert-preferences", { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data?.items) ? (data.items as AlertPreference[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function upsertAlertPreference(input: {
+  key: string;
+  acknowledged?: boolean;
+  muteUntil?: string | number | null;
+}): Promise<AlertPreference | null> {
+  const res = await timedFetch("/api/alert-preferences", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(`/api/alert-preferences returned ${res.status}`);
+  const data = await res.json();
+  return (data?.item as AlertPreference | null) ?? null;
+}
+
+export async function clearAlertPreference(key?: string): Promise<void> {
+  const query = key ? `?key=${encodeURIComponent(key)}` : "";
+  const res = await timedFetch(`/api/alert-preferences${query}`, {
+    method: "DELETE",
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`/api/alert-preferences returned ${res.status}`);
 }
 
 export async function getBalance(): Promise<AccountBalance> {
