@@ -546,6 +546,7 @@ function buildTerminalFallbackSnapshot(
       opportunityState: opportunity.label,
       orderableWorkers: blockerSummary.orderableCount,
       worstQuoteAgeMs: maxFinite(workers.map((worker) => worker.cryptoPriceAgeMs)),
+      pricingPathHealthy: status.pricing?.pricingPathHealthy ?? true,
       activePositions: status.positionTracker?.active ?? 0,
       lastFillAt: analytics?.summary.lastFillAt ?? null,
       lastWarningAt: warning.at,
