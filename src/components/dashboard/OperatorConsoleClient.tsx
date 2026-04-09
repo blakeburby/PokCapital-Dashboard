@@ -3183,7 +3183,7 @@ export default function OperatorConsoleClient({
     >
       <div className="max-w-7xl mx-auto px-4 py-6 md:px-6 lg:px-8 lg:py-8">
         <section
-          className="rounded-3xl p-5 md:p-7 mb-6"
+          className="rounded-3xl p-5 sm:p-6 lg:p-7 mb-6"
           style={{
             background:
               "linear-gradient(140deg, rgba(15,23,42,0.94), rgba(15,17,23,0.96) 52%, rgba(14,165,233,0.08))",
@@ -3191,23 +3191,23 @@ export default function OperatorConsoleClient({
             boxShadow: "0 20px 40px rgba(2,6,23,0.28)",
           }}
         >
-          <div className="flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
-            <div className="max-w-3xl">
-              <div className="flex flex-wrap items-center gap-2 mb-3">
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)] lg:items-start xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+            <div className="max-w-none lg:max-w-[30rem] xl:max-w-[33rem] 2xl:max-w-[36rem]">
+              <div className="flex flex-wrap items-center gap-2.5 mb-4">
                 <HeroSignal label={`System ${terminalOperator.label}`} tone={terminalOperator.tone} />
                 <HeroSignal label={`Opportunity ${terminalOpportunity.label}`} tone={terminalOpportunity.tone} />
                 <HeroSignal label={terminalBadge.label} tone={terminalBadge.tone} />
                 <HeroSignal label={health?.liveTradingEnabled ? "Live trading armed" : "Paper mode"} tone={health?.liveTradingEnabled ? "green" : "amber"} />
                 <HeroSignal label={summary?.fillsFromDb ? "Postgres analytics" : "Fallback analytics"} tone="violet" />
               </div>
-              <h1 className="text-3xl md:text-4xl font-semibold tracking-tight text-text mb-3">
+              <h1 className="max-w-[13ch] text-4xl font-semibold tracking-tight leading-[0.94] text-text sm:max-w-[14ch] sm:text-5xl lg:max-w-none lg:text-[3.25rem] xl:text-[3.55rem] mb-4">
                 Live operator console for trust, blockers, and execution readiness
               </h1>
-              <p className="text-sm md:text-base text-slate-300 max-w-2xl">
+              <p className="max-w-xl text-sm leading-6 text-slate-300 md:text-base">
                 The first scan is now intentionally operational: can you trust the engine, is anything orderable, what is blocking trade flow,
                 and only then what the ledger says about session and historical performance.
               </p>
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="mt-5 flex flex-wrap gap-2.5">
                 <HeroSignal
                   label={terminalPricingHealthy ? "pricing path healthy" : "pricing path degraded"}
                   tone={terminalPricingHealthy ? "green" : "amber"}
@@ -3231,7 +3231,7 @@ export default function OperatorConsoleClient({
               </div>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3 min-w-0 xl:min-w-[60rem]">
+            <div className="grid min-w-0 auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:self-stretch xl:gap-4 2xl:grid-cols-4">
               <MetricCard
                 label="System Trust"
                 value={terminalOperator.label}
