@@ -208,6 +208,24 @@ type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
 type TerminalConnectionState = "live" | "reconnecting" | "polling" | "stale";
 type OpsWindow = "15m" | "1h" | "24h";
 type LedgerWindow = "today" | "7d" | "all";
+type SortDirection = "asc" | "desc";
+type WorkerSortKey =
+  | "asset"
+  | "status"
+  | "market"
+  | "tte"
+  | "spot"
+  | "strike"
+  | "spread"
+  | "quoteAge"
+  | "lag"
+  | "source"
+  | "ev"
+  | "model"
+  | "marketProbability"
+  | "confidence"
+  | "blocker"
+  | "lastCommit";
 type StageMetric = { label: string; value: number; tone: Tone; sub: string };
 type ExecutionStage =
   | "candidate"
@@ -371,6 +389,55 @@ function classifyWorkerBlocker(worker: WorkerLike): BlockerCategory {
     reason.includes("minutes left")
   ) return "window";
   return "other";
+}
+
+function blockerPriority(blocker: BlockerCategory): number {
+  if (blocker === "data") return 0;
+  if (blocker === "risk") return 1;
+  if (blocker === "window") return 2;
+  if (blocker === "confidence") return 3;
+  if (blocker === "ev") return 4;
+  if (blocker === "other") return 5;
+  return 6;
+}
+
+function statusPriority(worker: WorkerLike): number {
+  const phase = (worker.enginePhase ?? "").toLowerCase();
+  if (phase.includes("execut")) return 0;
+  if (phase.includes("commit")) return 1;
+  if (worker.hasValidAsk && classifyWorkerBlocker(worker) === "clear") return 2;
+  if (worker.hasValidAsk) return 3;
+  return 4;
+}
+
+function workerSpread(worker: WorkerLike): number | null {
+  if (typeof worker.orderbookSpread === "number" && Number.isFinite(worker.orderbookSpread) && worker.orderbookSpread > 0) {
+    return worker.orderbookSpread;
+  }
+  const candidates = [
+    worker.marketYesAskCents != null && worker.marketYesBidCents != null ? worker.marketYesAskCents - worker.marketYesBidCents : null,
+    worker.marketNoAskCents != null && worker.marketNoBidCents != null ? worker.marketNoAskCents - worker.marketNoBidCents : null,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+  if (candidates.length === 0) return null;
+  return Math.max(...candidates);
+}
+
+function compareNullableNumber(a: number | null | undefined, b: number | null | undefined): number {
+  const av = typeof a === "number" && Number.isFinite(a) ? a : null;
+  const bv = typeof b === "number" && Number.isFinite(b) ? b : null;
+  if (av == null && bv == null) return 0;
+  if (av == null) return 1;
+  if (bv == null) return -1;
+  return av - bv;
+}
+
+function compareNullableString(a: string | null | undefined, b: string | null | undefined): number {
+  const av = a ?? "";
+  const bv = b ?? "";
+  if (!av && !bv) return 0;
+  if (!av) return 1;
+  if (!bv) return -1;
+  return av.localeCompare(bv);
 }
 
 function sampleMeta(
@@ -1062,9 +1129,11 @@ function probabilityTone(value: number | null | undefined, mode: 'model' | 'mark
 function MiniMeter({
   value,
   tone,
+  compact = false,
 }: {
   value: number | null | undefined;
   tone: Tone;
+  compact?: boolean;
 }) {
   const pct = normalizedPercentValue(value);
   const palette = toneValue(tone);
@@ -1074,10 +1143,10 @@ function MiniMeter({
 
   const width = Math.max(8, Math.min(100, pct));
   return (
-    <div className="min-w-[5.5rem]">
-      <div className="font-mono text-text">{pct.toFixed(1)}%</div>
+    <div className={compact ? "min-w-[4.5rem]" : "min-w-[5.5rem]"}>
+      <div className={`font-mono ${compact ? "text-xs" : ""} text-text`}>{pct.toFixed(1)}%</div>
       <div
-        className="mt-1 h-1.5 rounded-full overflow-hidden"
+        className={`mt-1 rounded-full overflow-hidden ${compact ? "h-1" : "h-1.5"}`}
         style={{ backgroundColor: 'rgba(51,65,85,0.75)' }}
       >
         <div
@@ -1339,14 +1408,8 @@ function WorkerMatrix({
   changedWorkerUntil: Record<string, number>;
   now: number;
 }) {
-  if (workers.length === 0) {
-    return (
-      <div className="panel text-sm text-muted">
-        Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset orderability,
-        book quality, spot freshness, true pricing lag, and the exact blocker on each asset.
-      </div>
-    );
-  }
+  const [sortKey, setSortKey] = useState<WorkerSortKey>("status");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
   const staleQuotes = workers.filter(
     (worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs
@@ -1356,12 +1419,126 @@ function WorkerMatrix({
   ).length;
   const fragileBooks = workers.filter((worker) => isOneSidedBook(worker)).length;
 
+  const sortedWorkers = useMemo(() => {
+    const rows = [...workers];
+    rows.sort((left, right) => {
+      let result = 0;
+      switch (sortKey) {
+        case "asset":
+          result = compareNullableString(left.assetKey, right.assetKey);
+          break;
+        case "status":
+          result = statusPriority(left) - statusPriority(right);
+          if (result === 0) result = blockerPriority(classifyWorkerBlocker(left)) - blockerPriority(classifyWorkerBlocker(right));
+          break;
+        case "market":
+          result = compareNullableString(left.marketTicker, right.marketTicker);
+          break;
+        case "tte":
+          result = compareNullableNumber(
+            left.marketCloseTime ? new Date(left.marketCloseTime).getTime() - now : null,
+            right.marketCloseTime ? new Date(right.marketCloseTime).getTime() - now : null
+          );
+          break;
+        case "spot":
+          result = compareNullableNumber(left.currentPrice, right.currentPrice);
+          break;
+        case "strike":
+          result = compareNullableNumber(left.marketFloorStrike, right.marketFloorStrike);
+          break;
+        case "spread":
+          result = compareNullableNumber(workerSpread(left), workerSpread(right));
+          break;
+        case "quoteAge":
+          result = compareNullableNumber(left.cryptoPriceAgeMs, right.cryptoPriceAgeMs);
+          break;
+        case "lag":
+          result = compareNullableNumber(workerPricingLagMs(left), workerPricingLagMs(right));
+          break;
+        case "source":
+          result = compareNullableString(formatMarketSource(left.marketDataSource), formatMarketSource(right.marketDataSource));
+          break;
+        case "ev":
+          result = compareNullableNumber(left.currentEV, right.currentEV);
+          break;
+        case "model":
+          result = compareNullableNumber(normalizedPercentValue(left.modelProbability), normalizedPercentValue(right.modelProbability));
+          break;
+        case "marketProbability":
+          result = compareNullableNumber(normalizedPercentValue(left.marketProbability), normalizedPercentValue(right.marketProbability));
+          break;
+        case "confidence":
+          result = compareNullableNumber(normalizedPercentValue(left.confidence), normalizedPercentValue(right.confidence));
+          break;
+        case "blocker":
+          result = blockerPriority(classifyWorkerBlocker(left)) - blockerPriority(classifyWorkerBlocker(right));
+          break;
+        case "lastCommit":
+          result = compareNullableNumber(extractTimestamp(String(left.lastCommittedCandidateAt ?? "")), extractTimestamp(String(right.lastCommittedCandidateAt ?? "")));
+          break;
+      }
+      if (result === 0) result = compareNullableString(left.assetKey, right.assetKey);
+      return sortDirection === "asc" ? result : -result;
+    });
+    return rows;
+  }, [workers, sortKey, sortDirection, now]);
+
+  function toggleSort(nextKey: WorkerSortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(nextKey);
+    setSortDirection(["asset", "market", "source", "blocker"].includes(nextKey) ? "asc" : "desc");
+  }
+
+  function SortHeader({
+    label,
+    column,
+    align = "left",
+    left,
+    widthClass,
+  }: {
+    label: string;
+    column: WorkerSortKey;
+    align?: "left" | "right" | "center";
+    left?: number;
+    widthClass?: string;
+  }) {
+    const active = sortKey === column;
+    return (
+      <th
+        className={`sticky top-0 z-10 py-2 font-medium bg-[#0F1117] ${widthClass ?? ""} ${align === "right" ? "text-right" : align === "center" ? "text-center" : "text-left"}`}
+        style={left != null ? { left } : undefined}
+      >
+        <button
+          type="button"
+          onClick={() => toggleSort(column)}
+          className={`inline-flex items-center gap-1 transition-colors ${align === "right" ? "justify-end w-full" : align === "center" ? "justify-center w-full" : ""}`}
+          style={{ color: active ? "#E2E8F0" : "#94A3B8" }}
+        >
+          <span>{label}</span>
+          <span className="text-[10px]">{active ? (sortDirection === "asc" ? "▲" : "▼") : "↕"}</span>
+        </button>
+      </th>
+    );
+  }
+
+  if (workers.length === 0) {
+    return (
+      <div className="panel text-sm text-muted">
+        Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset orderability,
+        book quality, spot freshness, true pricing lag, probabilities, EV, and the exact blocker on each asset.
+      </div>
+    );
+  }
+
   return (
     <div className="panel overflow-hidden">
       <div className="flex items-center justify-between mb-3 gap-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Worker Matrix</p>
-          <p className="text-sm text-muted">1-second terminal scan of live spot, book quality, quote freshness, true pricing lag, probabilities, EV, and blockers per asset</p>
+          <p className="text-sm text-muted">Sortable terminal grid for live spot, book quality, freshness, pricing lag, probabilities, EV, and blockers per asset.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2 justify-end">
           <HeroSignal label={`${workers.length} workers`} tone="blue" />
@@ -1373,7 +1550,7 @@ function WorkerMatrix({
       </div>
 
       <div className="grid gap-3 xl:hidden">
-        {workers.map((worker) => (
+        {sortedWorkers.map((worker) => (
           <WorkerCompactCard
             key={worker.assetKey}
             worker={worker}
@@ -1384,46 +1561,44 @@ function WorkerMatrix({
       </div>
 
       <div className="hidden xl:block overflow-x-auto">
-        <table className="w-full text-sm min-w-[1500px]">
+        <table className="w-full text-sm min-w-[2050px]">
           <thead>
             <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Asset</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Market</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">TTE</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] text-right">Spot</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">YES</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">NO</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Spot age</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Lag</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Source</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] text-right">EV</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Model P</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Market P</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Confidence</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Blocker</th>
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Last commit</th>
+              <SortHeader label="Asset" column="asset" left={0} widthClass="min-w-[9rem]" />
+              <SortHeader label="Status" column="status" left={144} widthClass="min-w-[11rem]" />
+              <SortHeader label="Market" column="market" widthClass="min-w-[18rem]" />
+              <SortHeader label="TTE" column="tte" widthClass="min-w-[6rem]" />
+              <SortHeader label="Spot" column="spot" align="right" widthClass="min-w-[8rem]" />
+              <SortHeader label="Strike" column="strike" align="right" widthClass="min-w-[8rem]" />
+              <SortHeader label="YES Bid" column="spread" align="right" widthClass="min-w-[6rem]" />
+              <SortHeader label="YES Ask" column="spread" align="right" widthClass="min-w-[6rem]" />
+              <SortHeader label="NO Bid" column="spread" align="right" widthClass="min-w-[6rem]" />
+              <SortHeader label="NO Ask" column="spread" align="right" widthClass="min-w-[6rem]" />
+              <SortHeader label="Spread" column="spread" align="right" widthClass="min-w-[6rem]" />
+              <SortHeader label="Spot Age" column="quoteAge" widthClass="min-w-[7rem]" />
+              <SortHeader label="Lag" column="lag" widthClass="min-w-[7rem]" />
+              <SortHeader label="Source" column="source" widthClass="min-w-[7rem]" />
+              <SortHeader label="EV" column="ev" align="right" widthClass="min-w-[7rem]" />
+              <SortHeader label="Model P" column="model" widthClass="min-w-[7rem]" />
+              <SortHeader label="Market P" column="marketProbability" widthClass="min-w-[7rem]" />
+              <SortHeader label="Confidence" column="confidence" widthClass="min-w-[7rem]" />
+              <SortHeader label="Blocker" column="blocker" widthClass="min-w-[9rem]" />
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[20rem] text-left">Detail</th>
+              <SortHeader label="Last Commit" column="lastCommit" widthClass="min-w-[8rem]" />
             </tr>
           </thead>
           <tbody>
-            {workers.map((worker) => {
+            {sortedWorkers.map((worker) => {
               const blocker = classifyWorkerBlocker(worker);
               const tone: Tone = blocker === 'clear' ? 'green' : blocker === 'data' ? 'red' : 'amber';
               const palette = toneValue(tone);
               const oneSided = isOneSidedBook(worker);
-              const sourceTone: Tone =
-                !worker.marketDataSource ? 'blue' : worker.marketDataSource === 'kalshi_ws_ticker' ? 'green' : 'amber';
-              const spotAgeTone = terminalPillTone(
-                worker.cryptoPriceAgeMs,
-                ALERT_THRESHOLDS.warningQuoteAgeMs,
-                ALERT_THRESHOLDS.criticalQuoteAgeMs
-              );
+              const sourceTone: Tone = !worker.marketDataSource ? 'blue' : worker.marketDataSource === 'kalshi_ws_ticker' ? 'green' : 'amber';
+              const spotAgeTone = terminalPillTone(worker.cryptoPriceAgeMs, ALERT_THRESHOLDS.warningQuoteAgeMs, ALERT_THRESHOLDS.criticalQuoteAgeMs);
               const lagMs = workerPricingLagMs(worker);
-              const lagTone = terminalPillTone(
-                lagMs,
-                ALERT_THRESHOLDS.warningPricingLagMs,
-                ALERT_THRESHOLDS.criticalPricingLagMs
-              );
+              const lagTone = terminalPillTone(lagMs, ALERT_THRESHOLDS.warningPricingLagMs, ALERT_THRESHOLDS.criticalPricingLagMs);
               const recentlyChanged = (changedWorkerUntil[worker.assetKey] ?? 0) > now;
+              const spread = workerSpread(worker);
 
               return (
                 <tr
@@ -1437,7 +1612,7 @@ function WorkerMatrix({
                     boxShadow: `inset 3px 0 0 ${palette.color}22`,
                   }}
                 >
-                  <td className="py-3">
+                  <td className="sticky left-0 z-[1] py-3 bg-[#0F1117]">
                     <div className="flex flex-col gap-1">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
@@ -1446,172 +1621,62 @@ function WorkerMatrix({
                           style={{ backgroundColor: recentlyChanged ? '#38BDF8' : 'rgba(148,163,184,0.45)' }}
                         />
                       </div>
-                      <div className="flex flex-wrap gap-1">
-                        <span
-                          className={
-                            worker.hasValidAsk
-                              ? oneSided
-                                ? 'badge badge-amber'
-                                : 'badge badge-green'
-                              : 'badge badge-red'
-                          }
-                        >
-                          {worker.hasValidAsk ? (oneSided ? 'fragile book' : 'orderable') : 'blocked'}
-                        </span>
-                        <span className="badge badge-gray">{(worker.enginePhase ?? 'idle').replace(/_/g, ' ')}</span>
-                      </div>
+                      <div className="text-[11px] text-muted">{worker.marketTicker ? 'live market' : 'no market'}</div>
+                    </div>
+                  </td>
+                  <td className="sticky left-[9rem] z-[1] py-3 bg-[#0F1117]">
+                    <div className="flex flex-wrap gap-1 max-w-[10rem]">
+                      <span className={worker.hasValidAsk ? (oneSided ? 'badge badge-amber' : 'badge badge-green') : 'badge badge-red'}>
+                        {worker.hasValidAsk ? (oneSided ? 'fragile' : 'orderable') : 'blocked'}
+                      </span>
+                      <span className="badge badge-gray">{(worker.enginePhase ?? 'idle').replace(/_/g, ' ')}</span>
                     </div>
                   </td>
                   <td className="py-3">
-                    <div className="flex flex-col gap-1 max-w-[15rem]">
+                    <div className="flex flex-col gap-1 max-w-[17rem]">
                       <span className="font-mono text-text break-all leading-snug">{worker.marketTicker ?? '—'}</span>
-                      <span className="text-[11px] text-muted leading-snug">
-                        {worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : 'never orderable'}
-                      </span>
+                      <span className="text-[11px] text-muted leading-snug">{worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : 'never orderable'}</span>
                     </div>
                   </td>
                   <td className="py-3 font-mono text-muted whitespace-nowrap">{formatTimeToExpiry(worker.marketCloseTime)}</td>
-                  <td className="py-3 text-right">
-                    <div className="font-mono text-text">
-                      {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : '—'}
-                    </div>
-                    <div className="text-[11px] text-muted">
-                      {worker.marketFloorStrike != null ? `strike $${worker.marketFloorStrike.toLocaleString()}` : 'strike —'}
-                    </div>
+                  <td className="py-3 text-right font-mono text-text">{worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : '—'}</td>
+                  <td className="py-3 text-right font-mono text-muted">{worker.marketFloorStrike != null ? `$${worker.marketFloorStrike.toLocaleString()}` : '—'}</td>
+                  <td className="py-3 text-right font-mono text-text">{worker.marketYesBidCents ?? '—'}</td>
+                  <td className="py-3 text-right font-mono text-text">{worker.marketYesAskCents ?? '—'}</td>
+                  <td className="py-3 text-right font-mono text-text">{worker.marketNoBidCents ?? '—'}</td>
+                  <td className="py-3 text-right font-mono text-text">{worker.marketNoAskCents ?? '—'}</td>
+                  <td className="py-3 text-right font-mono text-muted">{spread != null ? `${spread.toFixed(1)}c` : '—'}</td>
+                  <td className="py-3">
+                    <StatusPill value={formatPriceAge(worker.cryptoPriceAgeMs)} tone={spotAgeTone} sub={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs < 1000 ? 'fresh' : 'quote'} />
                   </td>
                   <td className="py-3">
-                    <QuoteCell bid={worker.marketYesBidCents} ask={worker.marketYesAskCents} />
+                    <StatusPill value={formatLatency(lagMs)} tone={lagTone} sub={lagMs != null && lagMs <= ALERT_THRESHOLDS.warningPricingLagMs ? 'hot path' : 'pipeline'} />
                   </td>
                   <td className="py-3">
-                    <div className="flex flex-col gap-1">
-                      <QuoteCell bid={worker.marketNoBidCents} ask={worker.marketNoAskCents} />
-                      {oneSided ? <span className="badge badge-amber">fragile</span> : null}
-                    </div>
-                  </td>
-                  <td className="py-3">
-                    <StatusPill
-                      value={formatPriceAge(worker.cryptoPriceAgeMs)}
-                      tone={spotAgeTone}
-                      sub={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs < 1000 ? 'fresh' : 'quote'}
-                    />
-                  </td>
-                  <td className="py-3">
-                    <StatusPill
-                      value={formatLatency(lagMs)}
-                      tone={lagTone}
-                      sub={lagMs != null && lagMs <= ALERT_THRESHOLDS.warningPricingLagMs ? 'hot path' : 'pipeline'}
-                    />
-                  </td>
-                  <td className="py-3">
-                    <span
-                      className="badge"
-                      style={{
-                        backgroundColor: sourceTone === 'green' ? 'rgba(34,197,94,0.12)' : sourceTone === 'amber' ? 'rgba(245,158,11,0.12)' : 'rgba(148,163,184,0.12)',
-                        color: sourceTone === 'green' ? '#22C55E' : sourceTone === 'amber' ? '#F59E0B' : '#94A3B8',
-                      }}
-                    >
+                    <span className="badge" style={{ backgroundColor: sourceTone === 'green' ? 'rgba(34,197,94,0.12)' : sourceTone === 'amber' ? 'rgba(245,158,11,0.12)' : 'rgba(148,163,184,0.12)', color: sourceTone === 'green' ? '#22C55E' : sourceTone === 'amber' ? '#F59E0B' : '#94A3B8' }}>
                       {formatMarketSource(worker.marketDataSource)}
                     </span>
                   </td>
-                  <td className="py-3 text-right">
-                    <div
-                      className="font-mono"
-                      style={{ color: worker.currentEV != null && worker.currentEV >= 0 ? '#22C55E' : worker.currentEV != null ? '#F59E0B' : '#94A3B8' }}
-                    >
-                      {worker.currentEV != null ? `${worker.currentEV >= 0 ? '+' : ''}${worker.currentEV.toFixed(1)}c` : '—'}
-                    </div>
-                    <div className="text-[11px] text-muted">{worker.candidateDirection ? `${worker.candidateDirection.toUpperCase()} bias` : 'no bias'}</div>
+                  <td className="py-3 text-right font-mono" style={{ color: worker.currentEV != null && worker.currentEV >= 0 ? '#22C55E' : worker.currentEV != null ? '#F59E0B' : '#94A3B8' }}>
+                    {worker.currentEV != null ? `${worker.currentEV >= 0 ? '+' : ''}${worker.currentEV.toFixed(1)}c` : '—'}
                   </td>
-                  <td className="py-3"><MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} /></td>
-                  <td className="py-3"><MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} /></td>
-                  <td className="py-3"><MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} /></td>
+                  <td className="py-3"><MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} compact /></td>
+                  <td className="py-3"><MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} compact /></td>
+                  <td className="py-3"><MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} compact /></td>
                   <td className="py-3">
-                    <div className="flex flex-col gap-1 max-w-[17rem]">
-                      <span
-                        className="badge"
-                        style={{ backgroundColor: palette.background, color: palette.color }}
-                      >
-                        {blockerLabel(blocker)}
-                      </span>
-                      <span className="text-xs text-muted leading-snug">
-                        {worker.noTradeReason ?? 'Entry path clear'}
-                      </span>
-                    </div>
+                    <span className="badge" style={{ backgroundColor: palette.background, color: palette.color }}>{blockerLabel(blocker)}</span>
                   </td>
                   <td className="py-3">
-                    {worker.lastCommittedCandidateAt ? (
-                      <span className="badge badge-blue">{formatRelativeMoment(worker.lastCommittedCandidateAt)}</span>
-                    ) : (
-                      <span className="text-xs text-muted">never</span>
-                    )}
+                    <div className="max-w-[19rem] text-xs text-muted leading-snug">{worker.noTradeReason ?? 'Entry path clear'}</div>
+                  </td>
+                  <td className="py-3">
+                    {worker.lastCommittedCandidateAt ? <span className="badge badge-blue">{formatRelativeMoment(worker.lastCommittedCandidateAt)}</span> : <span className="text-xs text-muted">never</span>}
                   </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-      </div>
-    </div>
-  );
-}
-
-function ExecutionFunnel({
-  funnel,
-  windowLabel,
-}: {
-  funnel: StageMetric[];
-  windowLabel: string;
-}) {
-  return (
-    <div className="panel">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <p className="section-label" style={{ marginBottom: 4 }}>Execution Funnel</p>
-          <p className="text-sm text-muted">Where opportunity is being lost from orderable state through settled fills</p>
-        </div>
-        <HeroSignal label={windowLabel} tone="blue" />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
-        {funnel.map((step) => (
-          <MetricCard
-            key={step.label}
-            label={step.label}
-            value={formatCount(step.value)}
-            sub={step.sub}
-            tone={step.tone}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AnomalySummary({
-  anomalies,
-  windowLabel,
-}: {
-  anomalies: StageMetric[];
-  windowLabel: string;
-}) {
-  return (
-    <div className="panel">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <p className="section-label" style={{ marginBottom: 4 }}>Active Anomalies</p>
-          <p className="text-sm text-muted">Compressed operator warnings so the raw log tails can stay secondary</p>
-        </div>
-        <HeroSignal label={windowLabel} tone="amber" />
-      </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {anomalies.map((item) => (
-          <MetricCard
-            key={item.label}
-            label={item.label}
-            value={formatCount(item.value)}
-            sub={item.sub}
-            tone={item.tone}
-          />
-        ))}
       </div>
     </div>
   );
@@ -1628,7 +1693,7 @@ function RecentFillsPanel({
     () => [...(fills ?? [])]
       .filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()))
       .sort((a, b) => new Date(b.created_time).getTime() - new Date(a.created_time).getTime())
-      .slice(0, 10),
+      .slice(0, 12),
     [fills]
   );
 
@@ -1637,7 +1702,7 @@ function RecentFillsPanel({
       <div className="flex items-center justify-between mb-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Recent Fills</p>
-          <p className="text-sm text-muted">Strategy ledger rows, with trade profit/loss derived from stored fill economics and settlement outcome</p>
+          <p className="text-sm text-muted">Dense ledger table with settlement outcome, fee, linkage, and fill-level realized P/L.</p>
         </div>
         <HeroSignal label={`${rows.length} fills · ${windowLabel}`} tone="violet" />
       </div>
@@ -1648,60 +1713,51 @@ function RecentFillsPanel({
         <div className="text-sm text-muted">No fills yet. The ledger table will populate after the first ingested fills.</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-sm min-w-[1080px]">
             <thead>
-              <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
-                <th className="py-2 font-medium">Time</th>
-                <th className="py-2 font-medium">Market</th>
+              <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
+                <th className="sticky top-0 left-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[8rem]">Time</th>
+                <th className="sticky top-0 left-[8rem] z-10 py-2 font-medium bg-[#0F1117] min-w-[6rem]">Asset</th>
+                <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[18rem]">Market</th>
                 <th className="py-2 font-medium">Side</th>
-                <th className="py-2 font-medium">Count</th>
-                <th className="py-2 font-medium">Fill</th>
-                <th className="py-2 font-medium">Fee</th>
+                <th className="py-2 font-medium text-right">Count</th>
+                <th className="py-2 font-medium text-right">Fill</th>
+                <th className="py-2 font-medium text-right">Fee</th>
                 <th className="py-2 font-medium">Outcome</th>
-                <th className="py-2 font-medium">Net PnL</th>
-                <th className="py-2 font-medium">Matched</th>
+                <th className="py-2 font-medium text-right">Net P/L</th>
+                <th className="py-2 font-medium">Link</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((fill) => {
                 const outcome = fill.outcome ?? null;
-                const netPnl = outcome
-                  ? deriveFillNetPnlCents(fill, outcome)
-                  : fill.pnl_net_cents ?? null;
+                const netPnl = outcome ? deriveFillNetPnlCents(fill, outcome) : fill.pnl_net_cents ?? null;
                 return (
-                  <tr key={fill.trade_id} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
-                    <td className="py-2 text-muted">{formatShortTimestamp(fill.created_time)}</td>
+                  <tr key={`${fill.trade_id}-${fill.order_id}`} className="border-b" style={{ borderColor: 'rgba(148,163,184,0.08)' }}>
+                    <td className="sticky left-0 z-[1] py-2 bg-[#0F1117] text-muted">{formatShortTimestamp(fill.created_time)}</td>
+                    <td className="sticky left-[8rem] z-[1] py-2 bg-[#0F1117] font-medium text-text">{assetFromFill(fill)}</td>
+                    <td className="py-2 text-xs text-muted truncate max-w-[18rem]">{fill.ticker}</td>
                     <td className="py-2">
-                      <div className="flex flex-col">
-                        <span className="font-medium text-text">{assetFromFill(fill)}</span>
-                        <span className="text-xs text-muted truncate max-w-[14rem]">{fill.ticker}</span>
-                      </div>
-                    </td>
-                    <td className="py-2">
-                      <span className={String(fill.side).toLowerCase() === "yes" ? "badge badge-green" : "badge badge-red"}>
+                      <span className={String(fill.side).toLowerCase() === 'yes' ? 'badge badge-green' : 'badge badge-red'}>
                         {String(fill.side).toUpperCase()}
                       </span>
                     </td>
-                    <td className="py-2 font-mono text-muted">{formatCount(fill.count)}</td>
-                    <td className="py-2 font-mono text-text">{getFillPriceCents(fill)}c</td>
-                    <td className="py-2 font-mono text-muted">
-                      {fill.fee_cents != null ? `${fill.fee_cents}c` : "—"}
-                    </td>
+                    <td className="py-2 text-right font-mono text-muted">{formatCount(fill.count)}</td>
+                    <td className="py-2 text-right font-mono text-text">{getFillPriceCents(fill)}c</td>
+                    <td className="py-2 text-right font-mono text-muted">{fill.fee_cents != null ? `${fill.fee_cents}c` : '—'}</td>
                     <td className="py-2">
                       {outcome ? (
-                        <span className={outcome === "win" ? "badge badge-green" : "badge badge-red"}>
-                          {outcome.toUpperCase()}
-                        </span>
+                        <span className={outcome === 'win' ? 'badge badge-green' : 'badge badge-red'}>{outcome.toUpperCase()}</span>
                       ) : (
                         <span className="badge badge-amber">PENDING</span>
                       )}
                     </td>
-                    <td className="py-2 font-mono" style={{ color: (netPnl ?? 0) >= 0 ? "#22C55E" : "#EF4444" }}>
-                      {netPnl != null ? formatCents(netPnl) : "—"}
+                    <td className="py-2 text-right font-mono" style={{ color: (netPnl ?? 0) >= 0 ? '#22C55E' : '#EF4444' }}>
+                      {netPnl != null ? formatCents(netPnl) : '—'}
                     </td>
                     <td className="py-2">
-                      <span className={fill.paper_trade_id ? "badge badge-blue" : "badge badge-gray"}>
-                        {fill.paper_trade_id ? "linked" : "unmatched"}
+                      <span className={fill.paper_trade_id ? 'badge badge-blue' : 'badge badge-gray'}>
+                        {fill.paper_trade_id ? 'linked' : 'unmatched'}
                       </span>
                     </td>
                   </tr>
@@ -2075,16 +2131,44 @@ function ExecutionDrilldown({
       <div className="flex items-center justify-between mb-4">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Execution Drill-down</p>
-          <p className="text-sm text-muted">Recent live-trade records with the execution funnel grounded in persisted trade rows, not just tail parsing.</p>
+          <p className="text-sm text-muted">Live trade rows in dense terminal form, with per-order detail and fill linkage beneath the selected row.</p>
         </div>
         <HeroSignal label={windowLabel} tone="violet" />
       </div>
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4 mb-4">
-        <MetricCard label="Pending Live Trades" value={formatCount(pending)} sub="accepted but not yet settled" tone={pending > 0 ? "amber" : "green"} />
-        <MetricCard label="Settled Trades" value={formatCount(settled)} sub="recent live trades resolved" tone={settled > 0 ? "green" : "blue"} />
-        <MetricCard label="Accepted / Submitted" value={formatPercent(acceptedRate)} sub={submittedCount > 0 ? `${acceptedCount} of ${submittedCount} recent submits` : "waiting for submissions in window"} tone={acceptedRate != null && acceptedRate < 0.5 ? "amber" : "green"} />
-        <MetricCard label="Realized PnL" value={formatCents(realizedPnl)} sub={`${rows.length} recent live trade rows`} tone={realizedPnl < 0 ? "red" : "green"} />
+      <div className="overflow-x-auto mb-4">
+        <table className="w-full text-sm min-w-[720px]">
+          <thead>
+            <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+              <th className="py-2 font-medium">Summary</th>
+              <th className="py-2 font-medium text-right">Current</th>
+              <th className="py-2 font-medium">Signal</th>
+              <th className="py-2 font-medium">Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {[
+              { label: "Pending live trades", value: formatCount(pending), tone: pending > 0 ? "amber" : "green", note: "accepted but not yet settled" },
+              { label: "Settled trades", value: formatCount(settled), tone: settled > 0 ? "green" : "blue", note: "recent live trades resolved" },
+              { label: "Accepted / submitted", value: formatPercent(acceptedRate), tone: acceptedRate != null && acceptedRate < 0.5 ? "amber" : "green", note: submittedCount > 0 ? `${acceptedCount} of ${submittedCount} recent submits` : "waiting for submissions in window" },
+              { label: "Realized P/L", value: formatCents(realizedPnl), tone: realizedPnl < 0 ? "red" : "green", note: `${rows.length} recent live trade rows` },
+            ].map((item) => {
+              const palette = toneValue(item.tone as Tone);
+              return (
+                <tr key={item.label} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                  <td className="py-2 font-medium text-text">{item.label}</td>
+                  <td className="py-2 text-right font-mono" style={{ color: palette.color }}>{item.value}</td>
+                  <td className="py-2">
+                    <span className="badge" style={{ backgroundColor: palette.background, color: palette.color }}>
+                      {item.tone === "green" ? "healthy" : item.tone === "red" ? "critical" : item.tone === "amber" ? "watch" : "info"}
+                    </span>
+                  </td>
+                  <td className="py-2 text-muted">{item.note}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
 
       {trades == null ? (
@@ -2093,19 +2177,22 @@ function ExecutionDrilldown({
         <div className="text-sm text-muted">Live trade rows will appear here once `/api/trades` returns recent executions.</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[920px]">
+          <table className="w-full text-sm min-w-[1380px]">
             <thead>
               <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
-                <th className="py-2 font-medium">Entry</th>
-                <th className="py-2 font-medium">Market</th>
+                <th className="sticky top-0 left-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[8rem]">Time</th>
+                <th className="sticky top-0 left-[8rem] z-10 py-2 font-medium bg-[#0F1117] min-w-[6rem]">Asset</th>
+                <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[18rem]">Market</th>
                 <th className="py-2 font-medium">Side</th>
                 <th className="py-2 font-medium">Entry</th>
                 <th className="py-2 font-medium">Size</th>
                 <th className="py-2 font-medium">EV</th>
+                <th className="py-2 font-medium">Model P</th>
+                <th className="py-2 font-medium">Market P</th>
                 <th className="py-2 font-medium">Confidence</th>
                 <th className="py-2 font-medium">Status</th>
                 <th className="py-2 font-medium">P/L</th>
-                <th className="py-2 font-medium">Order</th>
+                <th className="py-2 font-medium">Order ID</th>
                 <th className="py-2 font-medium">Detail</th>
               </tr>
             </thead>
@@ -2122,12 +2209,10 @@ function ExecutionDrilldown({
                       backgroundColor: selectedTrade?.id === trade.id ? "rgba(56,189,248,0.08)" : "transparent",
                     }}
                   >
-                    <td className="py-2 text-muted">{formatShortTimestamp(new Date(trade.entryTimestamp).toISOString())}</td>
+                    <td className="sticky left-0 z-[1] py-2 bg-[#0F1117] text-muted">{formatShortTimestamp(new Date(trade.entryTimestamp).toISOString())}</td>
+                    <td className="sticky left-[8rem] z-[1] py-2 bg-[#0F1117] font-medium text-text">{trade.asset}</td>
                     <td className="py-2">
-                      <div className="flex flex-col">
-                        <span className="font-medium text-text">{trade.asset}</span>
-                        <span className="text-xs text-muted truncate max-w-[15rem]">{trade.ticker ?? "—"}</span>
-                      </div>
+                      <span className="text-xs text-muted truncate max-w-[18rem] block">{trade.ticker ?? "—"}</span>
                     </td>
                     <td className="py-2">
                       <span className={trade.direction === "yes" ? "badge badge-green" : "badge badge-red"}>
@@ -2137,6 +2222,8 @@ function ExecutionDrilldown({
                     <td className="py-2 font-mono text-text">{trade.entryPrice}c</td>
                     <td className="py-2 font-mono text-muted">{formatCount(trade.liveCount ?? trade.suggestedSize)}</td>
                     <td className="py-2 font-mono text-text">{`${trade.ev >= 0 ? "+" : ""}${trade.ev.toFixed(1)}c`}</td>
+                    <td className="py-2 font-mono text-text">{formatPercent(trade.modelProbability)}</td>
+                    <td className="py-2 font-mono text-text">{formatPercent(trade.marketProbability)}</td>
                     <td className="py-2 font-mono text-text">{formatPercent(trade.confidence)}</td>
                     <td className="py-2">
                       <span className={settledTrade ? (trade.outcome === "win" ? "badge badge-green" : "badge badge-red") : "badge badge-amber"}>
