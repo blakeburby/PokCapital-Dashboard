@@ -63,6 +63,7 @@ const FILL_LIMIT = 180;
 const LOG_LIMIT = 220;
 const TRADE_LIMIT = 40;
 const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
+const ALERT_PREFS_STORAGE_KEY = "pok-dashboard-alert-prefs-v1";
 const ALERT_THRESHOLDS = {
   warningQuoteAgeMs: 3_000,
   criticalQuoteAgeMs: 6_000,
@@ -92,6 +93,11 @@ function formatPercent(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return "—";
   const normalized = Math.abs(value) <= 1 ? value * 100 : value;
   return `${normalized.toFixed(1)}%`;
+}
+
+function normalizedPercentValue(value: number | null | undefined): number | null {
+  if (value == null || Number.isNaN(value)) return null;
+  return Math.abs(value) <= 1 ? value * 100 : value;
 }
 
 function formatRelativeTime(isoOrNull: string | null | undefined): string {
@@ -199,6 +205,7 @@ type Escalation = {
   tone: Tone;
   kicker: string;
 };
+type AlertPrefs = Record<string, { acknowledged?: boolean; muteUntil?: number }>;
 
 interface FillSummarySnapshot {
   totalFills: number;
@@ -543,6 +550,81 @@ function tradePnlTotal(trade: Trade): number | null {
   if (trade.pnlTotal != null) return trade.pnlTotal;
   if (trade.pnlCents != null && trade.liveCount != null) return trade.pnlCents * trade.liveCount;
   return trade.pnlCents ?? null;
+}
+
+function alertKey(alert: Escalation): string {
+  return `${alert.kicker}|${alert.title}`;
+}
+
+function executionStageTone(stage: ExecutionStage): Tone {
+  if (stage === "accepted" || stage === "matched" || stage === "settled") return "green";
+  if (stage === "blocked") return "amber";
+  if (stage === "rejected") return "red";
+  return "blue";
+}
+
+function executionStageLabel(stage: ExecutionStage): string {
+  if (stage === "candidate") return "candidate";
+  if (stage === "committed") return "committed";
+  if (stage === "blocked") return "blocked";
+  if (stage === "submitted") return "submitted";
+  if (stage === "accepted") return "accepted";
+  if (stage === "rejected") return "rejected";
+  if (stage === "matched") return "matched";
+  return "settled";
+}
+
+function linkedFillsForTrade(trade: Trade, fills: KalshiFill[]): KalshiFill[] {
+  const entryWindowMs = 20 * 60_000;
+  const rows = fills.filter((fill) => {
+    if (trade.orderId && fill.order_id === trade.orderId) return true;
+    if (fill.paper_trade_id === trade.id) return true;
+    if (!trade.ticker || fill.ticker !== trade.ticker) return false;
+    return Math.abs(new Date(fill.created_time).getTime() - trade.entryTimestamp) <= entryWindowMs;
+  });
+
+  return rows.sort((a, b) => new Date(a.created_time).getTime() - new Date(b.created_time).getTime());
+}
+
+function linkedEventsForTrade(trade: Trade, events: ExecutionEvent[]): ExecutionEvent[] {
+  const entryWindowMs = 20 * 60_000;
+  return events
+    .filter((event) => {
+      if (trade.orderId && event.orderId === trade.orderId) return true;
+      if (trade.ticker && event.ticker === trade.ticker) {
+        return Math.abs(event.timestamp - trade.entryTimestamp) <= entryWindowMs;
+      }
+      return false;
+    })
+    .sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function groupExecutionEvents(events: ExecutionEvent[]) {
+  const groups = new Map<string, { key: string; asset: string | null; ticker: string | null; events: ExecutionEvent[] }>();
+
+  for (const event of events) {
+    const key = event.ticker ?? `asset:${event.asset ?? "unknown"}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.events.push(event);
+      if (!existing.asset && event.asset) existing.asset = event.asset;
+      if (!existing.ticker && event.ticker) existing.ticker = event.ticker;
+    } else {
+      groups.set(key, {
+        key,
+        asset: event.asset,
+        ticker: event.ticker,
+        events: [event],
+      });
+    }
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      events: [...group.events].sort((a, b) => b.timestamp - a.timestamp),
+    }))
+    .sort((a, b) => (b.events[0]?.timestamp ?? 0) - (a.events[0]?.timestamp ?? 0));
 }
 
 function isOneSidedBook(worker: BackendStatus["workers"][number]): boolean {
@@ -1105,15 +1187,126 @@ function StickyEscalations({
 }: {
   alerts: Escalation[];
 }) {
-  if (alerts.length === 0) return null;
+  const [prefs, setPrefs] = useState<AlertPrefs>({});
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(ALERT_PREFS_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as AlertPrefs;
+      setPrefs(parsed);
+    } catch {
+      setPrefs({});
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(ALERT_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+    } catch {
+      // ignore storage failures; alerts should still render
+    }
+  }, [prefs]);
+
+  useEffect(() => {
+    const activeKeys = new Set(alerts.map(alertKey));
+    setPrefs((current) => {
+      let changed = false;
+      const now = Date.now();
+      const next: AlertPrefs = {};
+      for (const [key, value] of Object.entries(current)) {
+        const muteUntil = value.muteUntil && value.muteUntil > now ? value.muteUntil : undefined;
+        const acknowledged = value.acknowledged && activeKeys.has(key) ? true : undefined;
+        if (muteUntil || acknowledged) {
+          next[key] = { ...(muteUntil ? { muteUntil } : {}), ...(acknowledged ? { acknowledged } : {}) };
+          if (muteUntil !== value.muteUntil || acknowledged !== value.acknowledged) changed = true;
+        } else if (value.muteUntil || value.acknowledged) {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [alerts]);
+
+  const now = Date.now();
+  const visibleAlerts = alerts.filter((alert) => {
+    const pref = prefs[alertKey(alert)];
+    if (pref?.acknowledged) return false;
+    if (pref?.muteUntil && pref.muteUntil > now) return false;
+    return true;
+  });
+  const mutedAlerts = alerts.filter((alert) => {
+    const muteUntil = prefs[alertKey(alert)]?.muteUntil;
+    return muteUntil != null && muteUntil > now;
+  });
+  const acknowledgedAlerts = alerts.filter((alert) => prefs[alertKey(alert)]?.acknowledged);
+
+  const updateAlertPref = (key: string, next: Partial<AlertPrefs[string]>) => {
+    setPrefs((current) => ({
+      ...current,
+      [key]: {
+        ...current[key],
+        ...next,
+      },
+    }));
+  };
+
+  const clearAllOverrides = () => setPrefs({});
+
+  if (alerts.length === 0 && mutedAlerts.length === 0 && acknowledgedAlerts.length === 0) return null;
 
   return (
     <div className="sticky top-3 z-30 mb-6 flex flex-col gap-3">
-      {alerts.map((alert) => {
+      {(mutedAlerts.length > 0 || acknowledgedAlerts.length > 0) ? (
+        <div
+          className="rounded-2xl px-4 py-3"
+          style={{
+            background: "rgba(15,17,23,0.88)",
+            border: "1px solid rgba(56,189,248,0.18)",
+            boxShadow: "0 18px 30px rgba(2,6,23,0.18)",
+          }}
+        >
+          <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+              <HeroSignal label="ALERT CONTROL" tone="blue" />
+              {mutedAlerts.length > 0 ? <span>{mutedAlerts.length} muted</span> : null}
+              {acknowledgedAlerts.length > 0 ? <span>{acknowledgedAlerts.length} acknowledged</span> : null}
+              {mutedAlerts.length > 0 ? (
+                <span>
+                  next unmute{" "}
+                  {new Date(
+                    Math.min(
+                      ...mutedAlerts
+                        .map((alert) => prefs[alertKey(alert)]?.muteUntil ?? Number.POSITIVE_INFINITY)
+                        .filter((value): value is number => Number.isFinite(value))
+                    )
+                  ).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                </span>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={clearAllOverrides}
+              className="badge transition-colors"
+              style={{
+                backgroundColor: "rgba(15,23,42,0.65)",
+                color: "#38BDF8",
+                border: "1px solid rgba(56,189,248,0.28)",
+                cursor: "pointer",
+              }}
+            >
+              Clear alert mutes
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {visibleAlerts.map((alert) => {
         const palette = toneValue(alert.tone);
+        const key = alertKey(alert);
         return (
           <div
-            key={`${alert.kicker}-${alert.title}`}
+            key={key}
             className="rounded-2xl px-4 py-3 backdrop-blur"
             style={{
               background: `linear-gradient(135deg, rgba(15,17,23,0.96), ${palette.background})`,
@@ -1129,6 +1322,47 @@ function StickyEscalations({
                 </div>
                 <p className="text-sm text-slate-300">{alert.detail}</p>
               </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateAlertPref(key, { acknowledged: true })}
+                  className="badge transition-colors"
+                  style={{
+                    backgroundColor: "rgba(15,23,42,0.65)",
+                    color: "#E2E8F0",
+                    border: "1px solid rgba(148,163,184,0.2)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Acknowledge
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateAlertPref(key, { muteUntil: Date.now() + 15 * 60_000 })}
+                  className="badge transition-colors"
+                  style={{
+                    backgroundColor: "rgba(15,23,42,0.65)",
+                    color: "#F59E0B",
+                    border: "1px solid rgba(245,158,11,0.28)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Mute 15m
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateAlertPref(key, { muteUntil: Date.now() + 60 * 60_000 })}
+                  className="badge transition-colors"
+                  style={{
+                    backgroundColor: "rgba(15,23,42,0.65)",
+                    color: "#38BDF8",
+                    border: "1px solid rgba(56,189,248,0.28)",
+                    cursor: "pointer",
+                  }}
+                >
+                  Mute 1h
+                </button>
+              </div>
             </div>
           </div>
         );
@@ -1139,13 +1373,16 @@ function StickyEscalations({
 
 function ExecutionDrilldown({
   trades,
+  fills,
   executionEvents,
   windowLabel,
 }: {
   trades: Trade[] | undefined;
+  fills: KalshiFill[] | undefined;
   executionEvents: ExecutionEvent[];
   windowLabel: string;
 }) {
+  const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const rows = useMemo(
     () => [...(trades ?? [])]
       .filter((trade) => trade.isLive)
@@ -1154,12 +1391,32 @@ function ExecutionDrilldown({
     [trades]
   );
 
+  useEffect(() => {
+    if (rows.length === 0) {
+      setSelectedTradeId(null);
+      return;
+    }
+    if (!selectedTradeId || !rows.some((trade) => trade.id === selectedTradeId)) {
+      setSelectedTradeId(rows[0].id);
+    }
+  }, [rows, selectedTradeId]);
+
   const pending = rows.filter((trade) => trade.outcome === "pending").length;
   const settled = rows.filter((trade) => trade.outcome === "win" || trade.outcome === "loss").length;
   const realizedPnl = rows.reduce((sum, trade) => sum + (tradePnlTotal(trade) ?? 0), 0);
   const submittedCount = executionEvents.filter((event) => event.stage === "submitted").length;
   const acceptedCount = executionEvents.filter((event) => event.stage === "accepted" || event.stage === "settled").length;
   const acceptedRate = submittedCount > 0 ? acceptedCount / submittedCount : null;
+  const selectedTrade = rows.find((trade) => trade.id === selectedTradeId) ?? rows[0] ?? null;
+  const selectedTradeConfidencePct = normalizedPercentValue(selectedTrade?.confidence);
+  const selectedTradeFills = useMemo(
+    () => (selectedTrade ? linkedFillsForTrade(selectedTrade, fills ?? []) : []),
+    [selectedTrade, fills]
+  );
+  const selectedTradeEvents = useMemo(
+    () => (selectedTrade ? linkedEventsForTrade(selectedTrade, executionEvents) : []),
+    [selectedTrade, executionEvents]
+  );
 
   return (
     <div className="panel overflow-hidden">
@@ -1197,6 +1454,7 @@ function ExecutionDrilldown({
                 <th className="py-2 font-medium">Status</th>
                 <th className="py-2 font-medium">P/L</th>
                 <th className="py-2 font-medium">Order</th>
+                <th className="py-2 font-medium">Detail</th>
               </tr>
             </thead>
             <tbody>
@@ -1204,7 +1462,14 @@ function ExecutionDrilldown({
                 const pnl = tradePnlTotal(trade);
                 const settledTrade = trade.outcome === "win" || trade.outcome === "loss";
                 return (
-                  <tr key={trade.id} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                  <tr
+                    key={trade.id}
+                    className="border-b"
+                    style={{
+                      borderColor: "rgba(148,163,184,0.08)",
+                      backgroundColor: selectedTrade?.id === trade.id ? "rgba(56,189,248,0.08)" : "transparent",
+                    }}
+                  >
                     <td className="py-2 text-muted">{formatShortTimestamp(new Date(trade.entryTimestamp).toISOString())}</td>
                     <td className="py-2">
                       <div className="flex flex-col">
@@ -1230,6 +1495,21 @@ function ExecutionDrilldown({
                       {pnl != null ? formatCents(pnl) : "—"}
                     </td>
                     <td className="py-2 font-mono text-xs text-muted">{trade.orderId ?? "—"}</td>
+                    <td className="py-2">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTradeId(trade.id)}
+                        className="badge transition-colors"
+                        style={{
+                          backgroundColor: selectedTrade?.id === trade.id ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+                          color: selectedTrade?.id === trade.id ? "#38BDF8" : "#94A3B8",
+                          border: `1px solid ${selectedTrade?.id === trade.id ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+                          cursor: "pointer",
+                        }}
+                      >
+                        {selectedTrade?.id === trade.id ? "Open" : "View"}
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
@@ -1237,6 +1517,130 @@ function ExecutionDrilldown({
           </table>
         </div>
       )}
+
+      {selectedTrade ? (
+        <div
+          className="mt-4 rounded-2xl p-4"
+          style={{
+            background: "linear-gradient(180deg, rgba(15,23,42,0.72), rgba(15,17,23,0.92))",
+            border: "1px solid rgba(56,189,248,0.16)",
+          }}
+        >
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between mb-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2 mb-1">
+                <HeroSignal label="ORDER DETAIL" tone="blue" />
+                <HeroSignal label={selectedTrade.asset} tone="violet" />
+                <HeroSignal
+                  label={selectedTrade.outcome === "pending" ? "PENDING" : selectedTrade.outcome.toUpperCase()}
+                  tone={selectedTrade.outcome === "pending" ? "amber" : ((tradePnlTotal(selectedTrade) ?? 0) >= 0 ? "green" : "red")}
+                />
+              </div>
+              <h3 className="text-lg font-semibold text-text">Per-order drill-down</h3>
+              <p className="text-sm text-muted">
+                Linked trade row, fills, and execution trail for {selectedTrade.ticker ?? selectedTrade.asset}.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <HeroSignal label={`order ${selectedTrade.orderId ?? "none"}`} tone="blue" />
+              <HeroSignal label={`fills ${selectedTradeFills.length}`} tone={selectedTradeFills.length > 0 ? "green" : "amber"} />
+              <HeroSignal label={`events ${selectedTradeEvents.length}`} tone={selectedTradeEvents.length > 0 ? "blue" : "amber"} />
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6 mb-4">
+            <MetricCard label="Entry" value={`${selectedTrade.entryPrice}c`} sub={selectedTrade.direction.toUpperCase()} tone={selectedTrade.direction === "yes" ? "green" : "red"} />
+            <MetricCard label="Size" value={formatCount(selectedTrade.liveCount ?? selectedTrade.suggestedSize)} sub="live or suggested count" tone="blue" />
+            <MetricCard label="Expected EV" value={`${selectedTrade.ev >= 0 ? "+" : ""}${selectedTrade.ev.toFixed(1)}c`} sub="per contract at commit" tone={selectedTrade.ev >= 0 ? "green" : "amber"} />
+            <MetricCard label="Confidence" value={formatPercent(selectedTrade.confidence)} sub={`regime ${selectedTrade.regime}`} tone={(selectedTradeConfidencePct ?? 0) >= 85 ? "green" : "amber"} />
+            <MetricCard label="Realized P/L" value={formatCents(tradePnlTotal(selectedTrade))} sub={selectedTrade.outcome === "pending" ? "unsettled" : "settled outcome"} tone={(tradePnlTotal(selectedTrade) ?? 0) >= 0 ? "green" : "red"} />
+            <MetricCard label="Linked Fills" value={formatCount(selectedTradeFills.length)} sub={selectedTradeFills.length > 0 ? `${selectedTradeEvents.length} execution events` : "no linked fills yet"} tone={selectedTradeFills.length > 0 ? "green" : "amber"} />
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
+            <div
+              className="rounded-2xl p-4"
+              style={{ backgroundColor: "rgba(2,6,23,0.38)", border: "1px solid rgba(148,163,184,0.08)" }}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="section-label" style={{ marginBottom: 4 }}>Linked fills</p>
+                  <p className="text-sm text-muted">Matched by order id, trade linkage, or ticker-time window.</p>
+                </div>
+                <HeroSignal label={`${selectedTradeFills.length} rows`} tone={selectedTradeFills.length > 0 ? "green" : "amber"} />
+              </div>
+              {selectedTradeFills.length === 0 ? (
+                <p className="text-sm text-muted">No linked fills yet for this order.</p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedTradeFills.map((fill) => {
+                    const pnl = fill.outcome ? deriveFillNetPnlCents(fill, fill.outcome) : fill.pnl_net_cents ?? null;
+                    return (
+                      <div
+                        key={`${fill.trade_id}-${fill.order_id}`}
+                        className="rounded-xl px-3 py-3"
+                        style={{ backgroundColor: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.08)" }}
+                      >
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
+                          <HeroSignal label={String(fill.side).toUpperCase()} tone={String(fill.side).toLowerCase() === "yes" ? "green" : "red"} />
+                          <span className="text-sm text-text font-medium">{formatShortTimestamp(fill.created_time)}</span>
+                          <span className="text-xs font-mono text-muted">{fill.order_id}</span>
+                        </div>
+                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-sm">
+                          <span className="text-muted">Count <span className="font-mono text-text">{formatCount(fill.count)}</span></span>
+                          <span className="text-muted">Fill <span className="font-mono text-text">{getFillPriceCents(fill)}c</span></span>
+                          <span className="text-muted">Fee <span className="font-mono text-text">{fill.fee_cents != null ? `${fill.fee_cents}c` : "—"}</span></span>
+                          <span className="text-muted">Net <span className="font-mono" style={{ color: (pnl ?? 0) >= 0 ? "#22C55E" : "#EF4444" }}>{pnl != null ? formatCents(pnl) : "—"}</span></span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div
+              className="rounded-2xl p-4"
+              style={{ backgroundColor: "rgba(2,6,23,0.38)", border: "1px solid rgba(148,163,184,0.08)" }}
+            >
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="section-label" style={{ marginBottom: 4 }}>Execution trail</p>
+                  <p className="text-sm text-muted">Candidate to settlement timeline grouped onto this order.</p>
+                </div>
+                <HeroSignal label={`${selectedTradeEvents.length} steps`} tone="blue" />
+              </div>
+              {selectedTradeEvents.length === 0 ? (
+                <p className="text-sm text-muted">No parsed execution events linked to this trade yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedTradeEvents.map((event) => (
+                    <div
+                      key={event.id}
+                      className="rounded-xl px-3 py-3"
+                      style={{ backgroundColor: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.08)" }}
+                    >
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                            <HeroSignal label={executionStageLabel(event.stage)} tone={executionStageTone(event.stage)} />
+                            <span className="text-sm font-medium text-text">{event.message}</span>
+                          </div>
+                          <p className="text-xs text-muted">{event.detail}</p>
+                        </div>
+                        <div className="flex flex-col items-start lg:items-end text-xs text-muted">
+                          <span>{formatRelativeMoment(event.iso)}</span>
+                          <span className="font-mono">{event.source}</span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1248,43 +1652,95 @@ function CandidateHistoryPanel({
   events: ExecutionEvent[];
   windowLabel: string;
 }) {
+  const groups = useMemo(() => groupExecutionEvents(events).slice(0, 8), [events]);
+
   return (
     <div className="panel overflow-hidden">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <p className="section-label" style={{ marginBottom: 4 }}>Candidate History</p>
-          <p className="text-sm text-muted">Recent candidate, block, submit, and accept transitions so you can see whether opportunity is dying in strategy, risk, or execution.</p>
+          <p className="section-label" style={{ marginBottom: 4 }}>Candidate Replay</p>
+          <p className="text-sm text-muted">Grouped by ticker so each market reads like one story instead of a flat pile of events.</p>
         </div>
-        <HeroSignal label={`${events.length} events · ${windowLabel}`} tone="blue" />
+        <HeroSignal label={`${groups.length} tickers · ${windowLabel}`} tone="blue" />
       </div>
 
       {events.length === 0 ? (
         <div className="text-sm text-muted">No recent execution-relevant events in this window.</div>
       ) : (
         <div className="space-y-2">
-          {events.slice(0, 12).map((event) => (
-            <div
-              key={event.id}
-              className="rounded-xl px-3 py-3"
-              style={{ backgroundColor: "rgba(2,6,23,0.45)", border: "1px solid rgba(148,163,184,0.08)" }}
-            >
-              <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2 mb-1">
-                    <HeroSignal label={event.stage} tone={event.tone} />
-                    {event.asset ? <span className="text-sm font-semibold text-text">{event.asset}</span> : null}
-                    {event.ticker ? <span className="text-xs font-mono text-muted truncate">{event.ticker}</span> : null}
+          {groups.map((group) => {
+            const latest = group.events[0];
+            const stageCounts = group.events.reduce<Record<ExecutionStage, number>>((acc, event) => {
+              acc[event.stage] = (acc[event.stage] ?? 0) + 1;
+              return acc;
+            }, {
+              candidate: 0,
+              committed: 0,
+              blocked: 0,
+              submitted: 0,
+              accepted: 0,
+              rejected: 0,
+              matched: 0,
+              settled: 0,
+            });
+
+            return (
+              <div
+                key={group.key}
+                className="rounded-xl px-3 py-3"
+                style={{ backgroundColor: "rgba(2,6,23,0.45)", border: "1px solid rgba(148,163,184,0.08)" }}
+              >
+                <div className="flex flex-col gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
+                      <HeroSignal label={executionStageLabel(latest.stage)} tone={executionStageTone(latest.stage)} />
+                      {group.asset ? <span className="text-sm font-semibold text-text">{group.asset}</span> : null}
+                      {group.ticker ? <span className="text-xs font-mono text-muted truncate">{group.ticker}</span> : null}
+                      <span className="text-xs text-muted">{formatRelativeMoment(latest.iso)}</span>
+                    </div>
+                    <p className="text-sm text-slate-200">{latest.message}</p>
+                    <p className="text-xs text-muted mt-1">
+                      {group.events.length} execution-relevant event{group.events.length === 1 ? "" : "s"} in this market replay.
+                    </p>
                   </div>
-                  <p className="text-sm text-slate-200">{event.message}</p>
-                  <p className="text-xs text-muted mt-1">{event.detail}</p>
-                </div>
-                <div className="flex flex-col items-start xl:items-end gap-1 text-xs text-muted">
-                  <span>{formatRelativeMoment(event.iso)}</span>
-                  <span className="font-mono">{event.source}</span>
+                  <div className="flex flex-wrap gap-2">
+                    {(["candidate", "committed", "blocked", "submitted", "accepted", "rejected", "matched", "settled"] as ExecutionStage[])
+                      .filter((stage) => stageCounts[stage] > 0)
+                      .map((stage) => (
+                        <HeroSignal
+                          key={stage}
+                          label={`${executionStageLabel(stage)} ${stageCounts[stage]}`}
+                          tone={executionStageTone(stage)}
+                        />
+                      ))}
+                  </div>
+                  <div className="space-y-2">
+                    {group.events.slice(0, 5).map((event) => (
+                      <div
+                        key={event.id}
+                        className="rounded-xl px-3 py-2"
+                        style={{ backgroundColor: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.08)" }}
+                      >
+                        <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2 mb-1">
+                              <HeroSignal label={executionStageLabel(event.stage)} tone={executionStageTone(event.stage)} />
+                              <span className="text-sm text-text">{event.message}</span>
+                            </div>
+                            <p className="text-xs text-muted">{event.detail}</p>
+                          </div>
+                          <div className="flex flex-col items-start xl:items-end gap-1 text-xs text-muted">
+                            <span>{formatRelativeMoment(event.iso)}</span>
+                            <span className="font-mono">{event.source}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
@@ -1960,7 +2416,7 @@ export default function OperatorConsoleClient({
             }
           />
           <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
-            <ExecutionDrilldown trades={opsTrades} executionEvents={executionEvents} windowLabel={opsWindowLabel} />
+            <ExecutionDrilldown trades={opsTrades} fills={strategyFills} executionEvents={executionEvents} windowLabel={opsWindowLabel} />
             <CandidateHistoryPanel events={executionEvents} windowLabel={opsWindowLabel} />
           </div>
         </section>
