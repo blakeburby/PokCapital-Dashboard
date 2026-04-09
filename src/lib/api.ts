@@ -246,6 +246,7 @@ export interface TerminalOperatorSummary {
   opportunityState: "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
   orderableWorkers: number;
   worstQuoteAgeMs: number | null;
+  pricingPathHealthy: boolean;
   activePositions: number;
   lastFillAt: string | null;
   lastWarningAt: string | null;
