@@ -36,6 +36,12 @@ function formatAgeMs(value: number | null): string {
   return `${(value / 1000).toFixed(1)}s`;
 }
 
+function formatLatency(value: number | null | undefined): string {
+  if (value == null) return "—";
+  if (value < 1_000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(1)}s`;
+}
+
 function formatBook(worker: WorkerSnapshot): string {
   const yesBid = worker.marketYesBidCents;
   const yesAsk = worker.marketYesAskCents;
@@ -57,6 +63,16 @@ function isOneSidedBook(worker: WorkerSnapshot): boolean {
   const asks = [worker.marketYesAskCents, worker.marketNoAskCents];
   const bids = [worker.marketYesBidCents, worker.marketNoBidCents];
   return asks.some((value) => value != null && value >= 99) || bids.some((value) => value != null && value <= 1);
+}
+
+function workerPricingLagMs(worker: WorkerSnapshot): number | null {
+  const candidates = [
+    worker.pricingLatency?.lastEvaluationLagMs,
+    worker.pricingLatency?.cryptoApplyLagMs,
+    worker.pricingLatency?.marketApplyLagMs,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+  if (candidates.length === 0) return null;
+  return Math.max(...candidates);
 }
 
 type Tone = "green" | "amber" | "red" | "blue" | "violet";
@@ -157,6 +173,10 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
   const startupCrypto = durationBetween(health?.startup?.startedAt, health?.startup?.firstCryptoAt);
   const startupMarket = durationBetween(health?.startup?.startedAt, health?.startup?.firstMarketDiscoveryAt);
   const degradedWorkers = workers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker");
+  const orderableWorkers = workers.filter((worker) => worker.hasValidAsk).length;
+  const oneSidedWorkers = workers.filter(isOneSidedBook).length;
+  const elevatedLagWorkers = workers.filter((worker) => (workerPricingLagMs(worker) ?? 0) > 250).length;
+  const pricingHealthy = status?.pricing?.pricingPathHealthy ?? (degradedWorkers.length === 0 && elevatedLagWorkers === 0);
 
   return (
     <div
@@ -230,120 +250,170 @@ export default function BackendStatusPanel({ health, status }: BackendStatusPane
 
       {connected && health ? (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-6 gap-2 px-4 py-4" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
-            <MiniCard
-              label="Uptime"
-              value={formatUptime(health.uptimeMinutes)}
-              sub={`v${health.version}`}
-              icon={<Clock size={11} />}
-              tone="blue"
-            />
-            <MiniCard
-              label="Workers"
-              value={`${health.activeWorkers.length}`}
-              sub={health.activeWorkers.join(", ")}
-              icon={<Server size={11} />}
-              tone="violet"
-            />
-            <MiniCard
-              label="Positions"
-              value={`${status?.positionTracker.active ?? 0}/${status?.positionTracker.max ?? 2}`}
-              sub="concurrent exposure"
-              icon={<Shield size={11} />}
-              tone="blue"
-            />
-            <MiniCard
-              label="Heartbeat"
-              value={relativeTime(health.lastHeartbeatTimestamp)}
-              sub={`${Math.round(health.heartbeatIntervalMs / 60_000)}m interval`}
-              icon={<Activity size={11} />}
-              tone={heartbeatStale ? "red" : "green"}
-            />
-            <MiniCard
-              label="API Latency"
-              value={health.latencyMs != null ? `${health.latencyMs}ms` : "—"}
-              sub="backend proxy roundtrip"
-              icon={<Wifi size={11} />}
-              tone={highLatency ? "amber" : "blue"}
-            />
-            <MiniCard
-              label="Orderable"
-              value={`${workers.filter((worker) => worker.hasValidAsk).length}/${workers.length || 0}`}
-              sub="workers with valid asks"
-              icon={<Target size={11} />}
-              tone={
-                workers.length === 0
-                  ? "blue"
-                  : workers.every((worker) => worker.hasValidAsk)
-                    ? "green"
-                    : workers.some((worker) => worker.hasValidAsk)
-                      ? "amber"
-                      : "red"
-              }
-            />
-            <MiniCard
-              label="Logs"
-              value={`${health.logCount}`}
-              sub={relativeTime(health.lastLogTimestamp)}
-              icon={<Activity size={11} />}
-              tone={logStale ? "amber" : "violet"}
-            />
-            <MiniCard
-              label="Startup Ready"
-              value={startupReady}
-              sub={`crypto ${startupCrypto} · market ${startupMarket}`}
-              icon={<Zap size={11} />}
-              tone="green"
-            />
-            <MiniCard
-              label="Live Config"
-              value={`EV ${health.engineConfig.evMinCents}-${health.engineConfig.evMaxCents}c`}
-              sub={`${Math.round(health.engineConfig.tradingWindowOpenMs / 60_000)}m to ${Math.round(health.engineConfig.tradingWindowCloseMs / 1000)}s · min entry ${health.engineConfig.minEntryPriceCents}c`}
-              icon={<Shield size={11} />}
-              tone="blue"
-            />
+          <div className="px-4 py-4 space-y-3" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2">
+              <MiniCard
+                label="Connectivity"
+                value={connected ? "Connected" : "Offline"}
+                sub={backendUrl}
+                icon={connected ? <Wifi size={11} /> : <WifiOff size={11} />}
+                tone={connected ? "green" : "red"}
+              />
+              <MiniCard
+                label="Heartbeat"
+                value={relativeTime(health.lastHeartbeatTimestamp)}
+                sub={`${Math.round(health.heartbeatIntervalMs / 60_000)}m interval`}
+                icon={<Activity size={11} />}
+                tone={heartbeatStale ? "red" : "green"}
+              />
+              <MiniCard
+                label="Pricing Path"
+                value={pricingHealthy ? "Healthy" : "Watch"}
+                sub={`eval ${formatLatency(status?.pricing?.lastEvaluationLagMs)} · rollover ${formatLatency(status?.pricing?.rolloverLagMs)}`}
+                icon={<Zap size={11} />}
+                tone={pricingHealthy ? "green" : "amber"}
+              />
+              <MiniCard
+                label="Orderable"
+                value={`${orderableWorkers}/${workers.length || 0}`}
+                sub="workers with valid asks"
+                icon={<Target size={11} />}
+                tone={
+                  workers.length === 0
+                    ? "blue"
+                    : orderableWorkers === workers.length
+                      ? "green"
+                      : orderableWorkers > 0
+                        ? "amber"
+                        : "red"
+                }
+              />
+              <MiniCard
+                label="Fallback Workers"
+                value={String(degradedWorkers.length)}
+                sub="not on ws ticker"
+                icon={<Server size={11} />}
+                tone={degradedWorkers.length > 0 ? "amber" : "green"}
+              />
+              <MiniCard
+                label="Fragile Books"
+                value={String(oneSidedWorkers)}
+                sub="one-sided top of book"
+                icon={<AlertTriangle size={11} />}
+                tone={oneSidedWorkers > 0 ? "amber" : "green"}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2">
+              <MiniCard
+                label="API Latency"
+                value={health.latencyMs != null ? `${health.latencyMs}ms` : "—"}
+                sub="dashboard to backend"
+                icon={<Wifi size={11} />}
+                tone={highLatency ? "amber" : "blue"}
+              />
+              <MiniCard
+                label="Exposure"
+                value={`${status?.positionTracker.active ?? 0}/${status?.positionTracker.max ?? 2}`}
+                sub="active positions"
+                icon={<Shield size={11} />}
+                tone={(status?.positionTracker.active ?? 0) > 0 ? "green" : "blue"}
+              />
+              <MiniCard
+                label="Startup Ready"
+                value={startupReady}
+                sub={`crypto ${startupCrypto} · market ${startupMarket}`}
+                icon={<Clock size={11} />}
+                tone="green"
+              />
+              <MiniCard
+                label="Logs"
+                value={`${health.logCount}`}
+                sub={relativeTime(health.lastLogTimestamp)}
+                icon={<Activity size={11} />}
+                tone={logStale ? "amber" : "violet"}
+              />
+              <MiniCard
+                label="Live Config"
+                value={`EV ${health.engineConfig.evMinCents}-${health.engineConfig.evMaxCents}c`}
+                sub={`${Math.round(health.engineConfig.tradingWindowOpenMs / 60_000)}m to ${Math.round(health.engineConfig.tradingWindowCloseMs / 1000)}s · min entry ${health.engineConfig.minEntryPriceCents}c`}
+                icon={<Shield size={11} />}
+                tone="blue"
+              />
+            </div>
           </div>
 
-          <div className="px-4 pb-4 grid gap-3 xl:grid-cols-[1.1fr_0.9fr]" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
+          <div className="px-4 pb-4 grid gap-3 xl:grid-cols-[0.95fr_1.05fr]" style={{ backgroundColor: "rgba(2,6,23,0.3)" }}>
             <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(15,23,42,0.55)", border: "1px solid rgba(51,65,85,0.9)" }}>
               <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium mb-2">
-                Health exceptions
+                Active exceptions
               </p>
               <div className="flex flex-wrap gap-2">
                 {!connected ? <span className="badge badge-red">backend disconnected</span> : null}
-                {heartbeatStale ? <span className="badge badge-amber">heartbeat stale</span> : null}
+                {heartbeatStale ? <span className="badge badge-red">heartbeat stale</span> : null}
                 {logStale ? <span className="badge badge-amber">logs stale</span> : null}
                 {highLatency ? <span className="badge badge-amber">latency {health.latencyMs}ms</span> : null}
+                {!pricingHealthy ? <span className="badge badge-amber">pricing path degraded</span> : null}
                 {hardWarnings.length > 0 ? <span className="badge badge-red">{hardWarnings.length} stale quote worker{hardWarnings.length === 1 ? "" : "s"}</span> : null}
                 {softWarnings.length > 0 ? <span className="badge badge-amber">{softWarnings.length} missing market/spot worker{softWarnings.length === 1 ? "" : "s"}</span> : null}
-                {degradedWorkers.length > 0 ? <span className="badge badge-blue">{degradedWorkers.length} fallback data source worker{degradedWorkers.length === 1 ? "" : "s"}</span> : null}
-                {workers.some(isOneSidedBook) ? <span className="badge badge-amber">{workers.filter(isOneSidedBook).length} one-sided book worker{workers.filter(isOneSidedBook).length === 1 ? "" : "s"}</span> : null}
-                {hardWarnings.length === 0 && softWarnings.length === 0 && !heartbeatStale && !logStale && !highLatency ? (
-                  <span className="badge badge-green">no active health exceptions</span>
+                {degradedWorkers.length > 0 ? <span className="badge badge-amber">{degradedWorkers.length} fallback data source worker{degradedWorkers.length === 1 ? "" : "s"}</span> : null}
+                {elevatedLagWorkers > 0 ? <span className="badge badge-amber">{elevatedLagWorkers} elevated lag worker{elevatedLagWorkers === 1 ? "" : "s"}</span> : null}
+                {oneSidedWorkers > 0 ? <span className="badge badge-amber">{oneSidedWorkers} one-sided book worker{oneSidedWorkers === 1 ? "" : "s"}</span> : null}
+                {hardWarnings.length === 0 && softWarnings.length === 0 && !heartbeatStale && !logStale && !highLatency && pricingHealthy && oneSidedWorkers === 0 ? (
+                  <span className="badge badge-green">no active trust exceptions</span>
                 ) : null}
+              </div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: "rgba(2,6,23,0.45)" }}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Runtime</p>
+                  <p className="mt-1 font-mono text-text">{formatUptime(health.uptimeMinutes)}</p>
+                  <p className="text-xs text-muted">v{health.version}</p>
+                </div>
+                <div className="rounded-lg px-3 py-2" style={{ backgroundColor: "rgba(2,6,23,0.45)" }}>
+                  <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Workers</p>
+                  <p className="mt-1 font-mono text-text">{health.activeWorkers.length}</p>
+                  <p className="text-xs text-muted">{health.activeWorkers.join(", ")}</p>
+                </div>
               </div>
             </div>
 
             <div className="rounded-xl p-3" style={{ backgroundColor: "rgba(15,23,42,0.55)", border: "1px solid rgba(51,65,85,0.9)" }}>
               <p className="text-[10px] uppercase tracking-[0.18em] text-muted font-medium mb-2">
-                Current data sources
+                Worker trust rail
               </p>
-              <div className="grid grid-cols-2 gap-2 text-xs">
-                {workers.map((worker) => (
-                  <div key={worker.assetKey} className="rounded-lg px-2.5 py-2" style={{ backgroundColor: "rgba(2,6,23,0.45)" }}>
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
-                      <span className={worker.hasValidAsk ? "badge badge-green" : "badge badge-amber"}>
-                        {worker.hasValidAsk ? (isOneSidedBook(worker) ? "fragile" : "ready") : "blocked"}
-                      </span>
+              <div className="space-y-2 text-xs">
+                {workers.map((worker) => {
+                  const tone = workerTone(worker);
+                  const lag = workerPricingLagMs(worker);
+                  return (
+                    <div
+                      key={worker.assetKey}
+                      className="rounded-lg px-3 py-2"
+                      style={{
+                        backgroundColor: "rgba(2,6,23,0.45)",
+                        boxShadow: `inset 3px 0 0 ${toneColor(tone)}33`,
+                      }}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
+                          <span className={worker.hasValidAsk ? (isOneSidedBook(worker) ? "badge badge-amber" : "badge badge-green") : "badge badge-amber"}>
+                            {worker.hasValidAsk ? (isOneSidedBook(worker) ? "fragile" : "ready") : "blocked"}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="badge badge-gray">{formatMarketSource(worker.marketDataSource)}</span>
+                          <span className="badge badge-gray">age {formatAgeMs(worker.cryptoPriceAgeMs)}</span>
+                          <span className="badge badge-gray">lag {formatLatency(lag)}</span>
+                        </div>
+                      </div>
+                      <div className="mt-1 grid gap-1 text-[11px] text-muted md:grid-cols-[minmax(0,1fr)_auto]">
+                        <span className="font-mono break-all">{worker.marketTicker ?? "—"}</span>
+                        <span className="font-mono">book {formatBook(worker)}</span>
+                      </div>
                     </div>
-                    <p className="mt-1 font-mono text-muted">{formatMarketSource(worker.marketDataSource)}</p>
-                    <p className="font-mono" style={{ color: workerTone(worker) === "red" ? "#EF4444" : "#E2E8F0" }}>
-                      age {formatAgeMs(worker.cryptoPriceAgeMs)}
-                    </p>
-                    <p className="font-mono text-muted">book {formatBook(worker)}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

@@ -1025,6 +1025,119 @@ function workerPricingLagMs(worker: TerminalWorkerSnapshot): number | null {
   return Math.max(...candidates);
 }
 
+function terminalPillTone(
+  value: number | null | undefined,
+  warningThreshold: number,
+  criticalThreshold: number
+): Tone {
+  if (value == null) return 'blue';
+  if (value > criticalThreshold) return 'red';
+  if (value > warningThreshold) return 'amber';
+  return 'green';
+}
+
+function probabilityTone(value: number | null | undefined, mode: 'model' | 'market' | 'confidence'): Tone {
+  const pct = normalizedPercentValue(value);
+  if (pct == null) return 'blue';
+  if (mode === 'confidence') {
+    if (pct >= 85) return 'green';
+    if (pct >= 65) return 'amber';
+    return 'red';
+  }
+  if (mode === 'market') {
+    return pct >= 70 ? 'blue' : pct <= 30 ? 'violet' : 'amber';
+  }
+  if (pct >= 80) return 'green';
+  if (pct >= 60) return 'blue';
+  if (pct >= 50) return 'amber';
+  return 'red';
+}
+
+function MiniMeter({
+  value,
+  tone,
+}: {
+  value: number | null | undefined;
+  tone: Tone;
+}) {
+  const pct = normalizedPercentValue(value);
+  const palette = toneValue(tone);
+  if (pct == null) {
+    return <span className="font-mono text-muted">—</span>;
+  }
+
+  const width = Math.max(8, Math.min(100, pct));
+  return (
+    <div className="min-w-[5.5rem]">
+      <div className="font-mono text-text">{pct.toFixed(1)}%</div>
+      <div
+        className="mt-1 h-1.5 rounded-full overflow-hidden"
+        style={{ backgroundColor: 'rgba(51,65,85,0.75)' }}
+      >
+        <div
+          className="h-full rounded-full"
+          style={{
+            width: `${width}%`,
+            background: `linear-gradient(90deg, ${palette.color}, ${palette.color}CC)`,
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function QuoteCell({
+  bid,
+  ask,
+}: {
+  bid: number | null | undefined;
+  ask: number | null | undefined;
+}) {
+  const spread = bid != null && ask != null ? Math.max(0, ask - bid) : null;
+  return (
+    <div className="min-w-[4.75rem]">
+      <div className="font-mono text-text">{`${bid ?? '—'}/${ask ?? '—'}`}</div>
+      <div className="text-[11px] text-muted">{spread != null ? `spr ${spread}c` : 'spread —'}</div>
+    </div>
+  );
+}
+
+function StatusPill({
+  value,
+  tone,
+  sub,
+}: {
+  value: string;
+  tone: Tone;
+  sub?: string;
+}) {
+  const palette = toneValue(tone);
+  return (
+    <div
+      className="inline-flex flex-col rounded-xl px-2.5 py-1.5 min-w-[4.75rem]"
+      style={{
+        backgroundColor: palette.background,
+        border: `1px solid ${palette.color}22`,
+      }}
+    >
+      <span className="font-mono text-[13px] leading-tight" style={{ color: palette.color }}>
+        {value}
+      </span>
+      {sub ? <span className="text-[10px] leading-tight text-muted mt-1">{sub}</span> : null}
+    </div>
+  );
+}
+
+function blockerLabel(blocker: BlockerCategory): string {
+  if (blocker === 'clear') return 'clear';
+  if (blocker === 'confidence') return 'confidence';
+  if (blocker === 'ev') return 'edge / EV';
+  if (blocker === 'data') return 'data';
+  if (blocker === 'risk') return 'risk';
+  if (blocker === 'window') return 'window';
+  return 'other';
+}
+
 function WorkerMatrix({
   workers,
   connectionState,
@@ -1045,67 +1158,70 @@ function WorkerMatrix({
     );
   }
 
+  const staleQuotes = workers.filter(
+    (worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs
+  ).length;
+  const elevatedLag = workers.filter(
+    (worker) => (workerPricingLagMs(worker) ?? 0) > ALERT_THRESHOLDS.warningPricingLagMs
+  ).length;
+  const fragileBooks = workers.filter((worker) => isOneSidedBook(worker)).length;
+
   return (
     <div className="panel overflow-hidden">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex items-center justify-between mb-3 gap-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Worker Matrix</p>
           <p className="text-sm text-muted">1-second terminal scan of live spot, book quality, quote freshness, true pricing lag, probabilities, EV, and blockers per asset</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 justify-end">
           <HeroSignal label={`${workers.length} workers`} tone="blue" />
+          <HeroSignal label={`${elevatedLag} elevated lag`} tone={elevatedLag > 0 ? 'amber' : 'green'} />
+          <HeroSignal label={`${staleQuotes} stale quotes`} tone={staleQuotes > 0 ? 'amber' : 'green'} />
+          <HeroSignal label={`${fragileBooks} fragile books`} tone={fragileBooks > 0 ? 'amber' : 'blue'} />
           <HeroSignal label={connectionBadge(connectionState, false).label} tone={connectionBadge(connectionState, false).tone} />
         </div>
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[1420px]">
+        <table className="w-full text-sm min-w-[1500px]">
           <thead>
-            <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
-              <th className="py-2 font-medium">Asset</th>
-              <th className="py-2 font-medium">Market</th>
-              <th className="py-2 font-medium">TTE</th>
-              <th className="py-2 font-medium">Spot</th>
-              <th className="py-2 font-medium">YES bid/ask</th>
-              <th className="py-2 font-medium">NO bid/ask</th>
-              <th className="py-2 font-medium">Spot age</th>
-              <th className="py-2 font-medium">Lag</th>
-              <th className="py-2 font-medium">Source</th>
-              <th className="py-2 font-medium">EV</th>
-              <th className="py-2 font-medium">Model P</th>
-              <th className="py-2 font-medium">Market P</th>
-              <th className="py-2 font-medium">Confidence</th>
-              <th className="py-2 font-medium">Blocker</th>
-              <th className="py-2 font-medium">Last commit</th>
+            <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Asset</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Market</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">TTE</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] text-right">Spot</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">YES</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">NO</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Spot age</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Lag</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Source</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] text-right">EV</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Model P</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Market P</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Confidence</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Blocker</th>
+              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117]">Last commit</th>
             </tr>
           </thead>
           <tbody>
             {workers.map((worker) => {
               const blocker = classifyWorkerBlocker(worker);
-              const tone: Tone =
-                blocker === "clear" ? "green" :
-                blocker === "data" ? "red" :
-                "amber";
+              const tone: Tone = blocker === 'clear' ? 'green' : blocker === 'data' ? 'red' : 'amber';
               const palette = toneValue(tone);
               const oneSided = isOneSidedBook(worker);
               const sourceTone: Tone =
-                !worker.marketDataSource ? "blue" :
-                worker.marketDataSource === "kalshi_ws_ticker" ? "green" : "amber";
-              const spotAgeTone: Tone =
-                worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.criticalQuoteAgeMs
-                  ? "red"
-                  : worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.warningQuoteAgeMs
-                    ? "amber"
-                    : "green";
-              const spotAgePalette = toneValue(spotAgeTone);
+                !worker.marketDataSource ? 'blue' : worker.marketDataSource === 'kalshi_ws_ticker' ? 'green' : 'amber';
+              const spotAgeTone = terminalPillTone(
+                worker.cryptoPriceAgeMs,
+                ALERT_THRESHOLDS.warningQuoteAgeMs,
+                ALERT_THRESHOLDS.criticalQuoteAgeMs
+              );
               const lagMs = workerPricingLagMs(worker);
-              const lagTone: Tone =
-                lagMs != null && lagMs > ALERT_THRESHOLDS.criticalPricingLagMs
-                  ? "red"
-                  : lagMs != null && lagMs > ALERT_THRESHOLDS.warningPricingLagMs
-                    ? "amber"
-                    : "green";
-              const lagPalette = toneValue(lagTone);
+              const lagTone = terminalPillTone(
+                lagMs,
+                ALERT_THRESHOLDS.warningPricingLagMs,
+                ALERT_THRESHOLDS.criticalPricingLagMs
+              );
               const recentlyChanged = (changedWorkerUntil[worker.assetKey] ?? 0) > now;
 
               return (
@@ -1113,8 +1229,11 @@ function WorkerMatrix({
                   key={worker.assetKey}
                   className="border-b align-top"
                   style={{
-                    borderColor: "rgba(148,163,184,0.08)",
-                    backgroundColor: recentlyChanged ? "rgba(56,189,248,0.04)" : "transparent",
+                    borderColor: 'rgba(148,163,184,0.08)',
+                    background: recentlyChanged
+                      ? 'linear-gradient(90deg, rgba(56,189,248,0.06), rgba(15,17,23,0.12) 18%, transparent 68%)'
+                      : 'transparent',
+                    boxShadow: `inset 3px 0 0 ${palette.color}22`,
                   }}
                 >
                   <td className="py-3">
@@ -1122,8 +1241,8 @@ function WorkerMatrix({
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-text">{worker.assetKey.toUpperCase()}</span>
                         <span
-                          className={`inline-flex h-2.5 w-2.5 rounded-full ${recentlyChanged ? "animate-pulse" : ""}`}
-                          style={{ backgroundColor: recentlyChanged ? "#38BDF8" : "rgba(148,163,184,0.45)" }}
+                          className={`inline-flex h-2.5 w-2.5 rounded-full ${recentlyChanged ? 'animate-pulse' : ''}`}
+                          style={{ backgroundColor: recentlyChanged ? '#38BDF8' : 'rgba(148,163,184,0.45)' }}
                         />
                       </div>
                       <div className="flex flex-wrap gap-1">
@@ -1131,69 +1250,90 @@ function WorkerMatrix({
                           className={
                             worker.hasValidAsk
                               ? oneSided
-                                ? "badge badge-amber"
-                                : "badge badge-green"
-                              : "badge badge-red"
+                                ? 'badge badge-amber'
+                                : 'badge badge-green'
+                              : 'badge badge-red'
                           }
                         >
-                          {worker.hasValidAsk ? (oneSided ? "fragile book" : "orderable") : "blocked"}
+                          {worker.hasValidAsk ? (oneSided ? 'fragile book' : 'orderable') : 'blocked'}
                         </span>
-                        <span className="badge badge-gray">{worker.enginePhase ?? "idle"}</span>
+                        <span className="badge badge-gray">{(worker.enginePhase ?? 'idle').replace(/_/g, ' ')}</span>
                       </div>
                     </div>
                   </td>
                   <td className="py-3">
-                    <div className="flex flex-col">
-                      <span className="font-mono text-text">{worker.marketTicker ?? "—"}</span>
-                      <span className="text-xs text-muted">
-                        {worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : "never orderable"}
+                    <div className="flex flex-col gap-1 max-w-[15rem]">
+                      <span className="font-mono text-text break-all leading-snug">{worker.marketTicker ?? '—'}</span>
+                      <span className="text-[11px] text-muted leading-snug">
+                        {worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : 'never orderable'}
                       </span>
                     </div>
                   </td>
-                  <td className="py-3 font-mono text-muted">{formatTimeToExpiry(worker.marketCloseTime)}</td>
-                  <td className="py-3 font-mono text-text">
-                    {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : "—"}
+                  <td className="py-3 font-mono text-muted whitespace-nowrap">{formatTimeToExpiry(worker.marketCloseTime)}</td>
+                  <td className="py-3 text-right">
+                    <div className="font-mono text-text">
+                      {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : '—'}
+                    </div>
+                    <div className="text-[11px] text-muted">
+                      {worker.marketFloorStrike != null ? `strike $${worker.marketFloorStrike.toLocaleString()}` : 'strike —'}
+                    </div>
                   </td>
-                  <td className="py-3 font-mono text-text">{`${worker.marketYesBidCents ?? "—"}/${worker.marketYesAskCents ?? "—"}`}</td>
+                  <td className="py-3">
+                    <QuoteCell bid={worker.marketYesBidCents} ask={worker.marketYesAskCents} />
+                  </td>
                   <td className="py-3">
                     <div className="flex flex-col gap-1">
-                      <span className="font-mono text-text">{`${worker.marketNoBidCents ?? "—"}/${worker.marketNoAskCents ?? "—"}`}</span>
+                      <QuoteCell bid={worker.marketNoBidCents} ask={worker.marketNoAskCents} />
                       {oneSided ? <span className="badge badge-amber">fragile</span> : null}
                     </div>
                   </td>
-                  <td className="py-3 font-mono" style={{ color: spotAgePalette.color }}>
-                    {formatPriceAge(worker.cryptoPriceAgeMs)}
+                  <td className="py-3">
+                    <StatusPill
+                      value={formatPriceAge(worker.cryptoPriceAgeMs)}
+                      tone={spotAgeTone}
+                      sub={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs < 1000 ? 'fresh' : 'quote'}
+                    />
                   </td>
-                  <td className="py-3 font-mono" style={{ color: lagPalette.color }}>
-                    {formatLatency(lagMs)}
+                  <td className="py-3">
+                    <StatusPill
+                      value={formatLatency(lagMs)}
+                      tone={lagTone}
+                      sub={lagMs != null && lagMs <= ALERT_THRESHOLDS.warningPricingLagMs ? 'hot path' : 'pipeline'}
+                    />
                   </td>
                   <td className="py-3">
                     <span
                       className="badge"
                       style={{
-                        backgroundColor: sourceTone === "green" ? "rgba(34,197,94,0.12)" : sourceTone === "amber" ? "rgba(245,158,11,0.12)" : "rgba(148,163,184,0.12)",
-                        color: sourceTone === "green" ? "#22C55E" : sourceTone === "amber" ? "#F59E0B" : "#94A3B8",
+                        backgroundColor: sourceTone === 'green' ? 'rgba(34,197,94,0.12)' : sourceTone === 'amber' ? 'rgba(245,158,11,0.12)' : 'rgba(148,163,184,0.12)',
+                        color: sourceTone === 'green' ? '#22C55E' : sourceTone === 'amber' ? '#F59E0B' : '#94A3B8',
                       }}
                     >
                       {formatMarketSource(worker.marketDataSource)}
                     </span>
                   </td>
-                  <td className="py-3 font-mono text-text">
-                    {worker.currentEV != null ? `${worker.currentEV >= 0 ? "+" : ""}${worker.currentEV.toFixed(1)}c` : "—"}
+                  <td className="py-3 text-right">
+                    <div
+                      className="font-mono"
+                      style={{ color: worker.currentEV != null && worker.currentEV >= 0 ? '#22C55E' : worker.currentEV != null ? '#F59E0B' : '#94A3B8' }}
+                    >
+                      {worker.currentEV != null ? `${worker.currentEV >= 0 ? '+' : ''}${worker.currentEV.toFixed(1)}c` : '—'}
+                    </div>
+                    <div className="text-[11px] text-muted">{worker.candidateDirection ? `${worker.candidateDirection.toUpperCase()} bias` : 'no bias'}</div>
                   </td>
-                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.modelProbability)}</td>
-                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.marketProbability)}</td>
-                  <td className="py-3 font-mono text-text">{formatProbabilityCell(worker.confidence)}</td>
+                  <td className="py-3"><MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} /></td>
+                  <td className="py-3"><MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} /></td>
+                  <td className="py-3"><MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} /></td>
                   <td className="py-3">
-                    <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1 max-w-[17rem]">
                       <span
                         className="badge"
                         style={{ backgroundColor: palette.background, color: palette.color }}
                       >
-                        {blocker}
+                        {blockerLabel(blocker)}
                       </span>
-                      <span className="text-xs text-muted max-w-[18rem]">
-                        {worker.noTradeReason ?? "Entry path clear"}
+                      <span className="text-xs text-muted leading-snug">
+                        {worker.noTradeReason ?? 'Entry path clear'}
                       </span>
                     </div>
                   </td>
@@ -2629,6 +2769,31 @@ export default function OperatorConsoleClient({
     if (lags.length === 0) return null;
     return Math.max(...lags);
   }, [terminalWorkers]);
+  const terminalFallbackWorkers = useMemo(
+    () => terminalWorkers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker").length,
+    [terminalWorkers]
+  );
+  const terminalFragileBooks = useMemo(
+    () => terminalWorkers.filter((worker) => isOneSidedBook(worker)).length,
+    [terminalWorkers]
+  );
+  const terminalStaleQuotes = useMemo(
+    () => terminalWorkers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs).length,
+    [terminalWorkers]
+  );
+  const terminalPricingHealthy = terminalSnapshot?.operatorSummary.pricingPathHealthy ?? status?.pricing?.pricingPathHealthy ?? true;
+  const terminalLatestCommitAt = useMemo(() => {
+    const timestamps = terminalWorkers
+      .map((worker) => {
+        const value = worker.lastCommittedCandidateAt;
+        if (value == null) return null;
+        const ms = typeof value === "number" ? value : new Date(value).getTime();
+        return Number.isFinite(ms) ? ms : null;
+      })
+      .filter((value): value is number => value != null);
+    if (timestamps.length === 0) return null;
+    return new Date(Math.max(...timestamps)).toISOString();
+  }, [terminalWorkers]);
   const terminalActivePositions = terminalSnapshot?.operatorSummary.activePositions ?? status?.positionTracker.active ?? 0;
   const workers = status?.workers ?? [];
   const blockerSummary = useMemo(() => buildBlockerSummary(workers, windowMs(opsWindow)), [workers, opsWindow]);
@@ -2846,6 +3011,28 @@ export default function OperatorConsoleClient({
                 The first scan is now intentionally operational: can you trust the engine, is anything orderable, what is blocking trade flow,
                 and only then what the ledger says about session and historical performance.
               </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <HeroSignal
+                  label={terminalPricingHealthy ? "pricing path healthy" : "pricing path degraded"}
+                  tone={terminalPricingHealthy ? "green" : "amber"}
+                />
+                <HeroSignal
+                  label={`${terminalFallbackWorkers} fallback worker${terminalFallbackWorkers === 1 ? "" : "s"}`}
+                  tone={terminalFallbackWorkers > 0 ? "amber" : "blue"}
+                />
+                <HeroSignal
+                  label={`${terminalFragileBooks} fragile book${terminalFragileBooks === 1 ? "" : "s"}`}
+                  tone={terminalFragileBooks > 0 ? "amber" : "blue"}
+                />
+                <HeroSignal
+                  label={`${terminalStaleQuotes} stale quote worker${terminalStaleQuotes === 1 ? "" : "s"}`}
+                  tone={terminalStaleQuotes > 0 ? "red" : "green"}
+                />
+                <HeroSignal
+                  label={terminalLatestCommitAt ? `last commit ${formatRelativeTime(terminalLatestCommitAt)}` : "no recent commit"}
+                  tone={terminalLatestCommitAt ? "blue" : "violet"}
+                />
+              </div>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3 min-w-0 xl:min-w-[60rem]">
@@ -2855,6 +3042,7 @@ export default function OperatorConsoleClient({
                 sub={terminalBadge.sub}
                 tone={terminalOperator.tone}
                 icon={<Shield size={14} />}
+                badge={{ label: terminalPricingHealthy ? "priced" : "degraded", tone: terminalPricingHealthy ? "green" : "amber" }}
               />
               <MetricCard
                 label="Opportunity State"
@@ -2862,6 +3050,11 @@ export default function OperatorConsoleClient({
                 sub={terminalOpportunity.sub}
                 tone={terminalOpportunity.tone}
                 icon={<Target size={14} />}
+                badge={
+                  terminalBlockerSummary.recentlyCommittedCount > 0
+                    ? { label: `${terminalBlockerSummary.recentlyCommittedCount} committed`, tone: "blue" }
+                    : null
+                }
               />
               <MetricCard
                 label="Orderable Workers"
@@ -2869,6 +3062,11 @@ export default function OperatorConsoleClient({
                 sub={`${terminalBlockerSummary.counts.data} data-blocked · ${terminalBlockerSummary.counts.ev + terminalBlockerSummary.counts.confidence} strategy-gated`}
                 tone={terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" : "amber"}
                 icon={<Activity size={14} />}
+                badge={
+                  terminalFallbackWorkers > 0
+                    ? { label: `${terminalFallbackWorkers} fallback`, tone: "amber" }
+                    : null
+                }
               />
               <MetricCard
                 label="Pricing Lag"
@@ -2876,6 +3074,7 @@ export default function OperatorConsoleClient({
                 sub={fastestWorkerLag != null ? `best ${formatLatency(fastestWorkerLag)}` : "waiting for latency samples"}
                 tone={slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.criticalPricingLagMs ? "red" : slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.warningPricingLagMs ? "amber" : "green"}
                 icon={<Activity size={14} />}
+                badge={{ label: terminalPricingHealthy ? "hot path" : "watch", tone: terminalPricingHealthy ? "green" : "amber" }}
               />
               <MetricCard
                 label="Worst Spot Age"
@@ -2883,6 +3082,11 @@ export default function OperatorConsoleClient({
                 sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
                 tone={terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.warningQuoteAgeMs ? "amber" : "blue"}
                 icon={<Waves size={14} />}
+                badge={
+                  terminalStaleQuotes > 0
+                    ? { label: `${terminalStaleQuotes} stale`, tone: "red" }
+                    : null
+                }
               />
               <MetricCard
                 label="Active Positions"
@@ -2890,6 +3094,11 @@ export default function OperatorConsoleClient({
                 sub={health ? `${health.pendingTrades} pending trades · ${health.settledTrades} settled` : "position tracker"}
                 tone={terminalActivePositions > 0 ? "green" : "blue"}
                 icon={<Wallet size={14} />}
+                badge={
+                  terminalActivePositions >= (status?.positionTracker.max ?? Number.MAX_SAFE_INTEGER)
+                    ? { label: "at cap", tone: "amber" }
+                    : null
+                }
               />
               <MetricCard
                 label="Last Fill / Warning"
@@ -2897,6 +3106,11 @@ export default function OperatorConsoleClient({
                 sub={terminalLastWarningAt ? `warning ${formatRelativeTime(terminalLastWarningAt)}` : terminalLastWarningMessage ? terminalLastWarningMessage.slice(0, 88) : "no recent warning or reject"}
                 tone={terminalLastWarningAt || terminalLastWarningMessage ? "amber" : "green"}
                 icon={<AlertTriangle size={14} />}
+                badge={
+                  terminalLastWarningAt || terminalLastWarningMessage
+                    ? { label: "attention", tone: "amber" }
+                    : { label: "quiet", tone: "green" }
+                }
               />
             </div>
           </div>
