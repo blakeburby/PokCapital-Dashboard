@@ -1139,6 +1139,190 @@ function blockerLabel(blocker: BlockerCategory): string {
   return 'other';
 }
 
+function WorkerCompactCard({
+  worker,
+  changedUntil,
+  now,
+}: {
+  worker: TerminalWorkerSnapshot;
+  changedUntil: number;
+  now: number;
+}) {
+  const blocker = classifyWorkerBlocker(worker);
+  const tone: Tone = blocker === 'clear' ? 'green' : blocker === 'data' ? 'red' : 'amber';
+  const palette = toneValue(tone);
+  const oneSided = isOneSidedBook(worker);
+  const sourceTone: Tone =
+    !worker.marketDataSource ? 'blue' : worker.marketDataSource === 'kalshi_ws_ticker' ? 'green' : 'amber';
+  const spotAgeTone = terminalPillTone(
+    worker.cryptoPriceAgeMs,
+    ALERT_THRESHOLDS.warningQuoteAgeMs,
+    ALERT_THRESHOLDS.criticalQuoteAgeMs
+  );
+  const lagMs = workerPricingLagMs(worker);
+  const lagTone = terminalPillTone(
+    lagMs,
+    ALERT_THRESHOLDS.warningPricingLagMs,
+    ALERT_THRESHOLDS.criticalPricingLagMs
+  );
+  const recentlyChanged = changedUntil > now;
+
+  return (
+    <div
+      className="rounded-2xl p-4 space-y-4"
+      style={{
+        background: recentlyChanged
+          ? 'linear-gradient(135deg, rgba(56,189,248,0.08), rgba(15,17,23,0.96) 18%, rgba(15,17,23,0.92))'
+          : 'linear-gradient(180deg, rgba(15,17,23,0.96), rgba(15,17,23,0.88))',
+        border: '1px solid rgba(51,65,85,0.75)',
+        boxShadow: `inset 3px 0 0 ${palette.color}22`,
+      }}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-text text-lg">{worker.assetKey.toUpperCase()}</span>
+            <span
+              className={`inline-flex h-2.5 w-2.5 rounded-full ${recentlyChanged ? 'animate-pulse' : ''}`}
+              style={{ backgroundColor: recentlyChanged ? '#38BDF8' : 'rgba(148,163,184,0.45)' }}
+            />
+            <span className="badge badge-gray">{(worker.enginePhase ?? 'idle').replace(/_/g, ' ')}</span>
+          </div>
+          <p className="mt-2 font-mono text-sm text-text break-all">{worker.marketTicker ?? '—'}</p>
+          <p className="text-xs text-muted mt-1">
+            {formatTimeToExpiry(worker.marketCloseTime)} ·{' '}
+            {worker.lastOrderableAt ? `orderable ${formatRelativeMoment(worker.lastOrderableAt)}` : 'never orderable'}
+          </p>
+        </div>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <span
+            className={
+              worker.hasValidAsk
+                ? oneSided
+                  ? 'badge badge-amber'
+                  : 'badge badge-green'
+                : 'badge badge-red'
+            }
+          >
+            {worker.hasValidAsk ? (oneSided ? 'fragile book' : 'orderable') : 'blocked'}
+          </span>
+          <span className="badge" style={{ backgroundColor: palette.background, color: palette.color }}>
+            {blockerLabel(blocker)}
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Spot</p>
+          <p className="mt-1 font-mono text-text">
+            {worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : '—'}
+          </p>
+          <p className="text-[11px] text-muted">
+            {worker.marketFloorStrike != null ? `strike $${worker.marketFloorStrike.toLocaleString()}` : 'strike —'}
+          </p>
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Source</p>
+          <div className="mt-1">
+            <span
+              className="badge"
+              style={{
+                backgroundColor:
+                  sourceTone === 'green'
+                    ? 'rgba(34,197,94,0.12)'
+                    : sourceTone === 'amber'
+                      ? 'rgba(245,158,11,0.12)'
+                      : 'rgba(148,163,184,0.12)',
+                color:
+                  sourceTone === 'green'
+                    ? '#22C55E'
+                    : sourceTone === 'amber'
+                      ? '#F59E0B'
+                      : '#94A3B8',
+              }}
+            >
+              {formatMarketSource(worker.marketDataSource)}
+            </span>
+          </div>
+          <p className="text-[11px] text-muted mt-2">
+            {worker.lastCommittedCandidateAt
+              ? `last commit ${formatRelativeMoment(worker.lastCommittedCandidateAt)}`
+              : 'no recent commit'}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted mb-1">YES book</p>
+          <QuoteCell bid={worker.marketYesBidCents} ask={worker.marketYesAskCents} />
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted mb-1">NO book</p>
+          <QuoteCell bid={worker.marketNoBidCents} ask={worker.marketNoAskCents} />
+          {oneSided ? <span className="badge badge-amber mt-2">fragile</span> : null}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Spot age</p>
+          <StatusPill
+            value={formatPriceAge(worker.cryptoPriceAgeMs)}
+            tone={spotAgeTone}
+            sub={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs < 1000 ? 'fresh' : 'quote'}
+          />
+        </div>
+        <div className="space-y-1">
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Lag</p>
+          <StatusPill
+            value={formatLatency(lagMs)}
+            tone={lagTone}
+            sub={lagMs != null && lagMs <= ALERT_THRESHOLDS.warningPricingLagMs ? 'hot path' : 'pipeline'}
+          />
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">EV</p>
+          <p
+            className="mt-1 font-mono"
+            style={{ color: worker.currentEV != null && worker.currentEV >= 0 ? '#22C55E' : worker.currentEV != null ? '#F59E0B' : '#94A3B8' }}
+          >
+            {worker.currentEV != null ? `${worker.currentEV >= 0 ? '+' : ''}${worker.currentEV.toFixed(1)}c` : '—'}
+          </p>
+          <p className="text-[11px] text-muted">
+            {worker.candidateDirection ? `${worker.candidateDirection.toUpperCase()} bias` : 'no bias'}
+          </p>
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted">Blocker</p>
+          <p className="mt-1 text-sm" style={{ color: palette.color }}>
+            {blockerLabel(blocker)}
+          </p>
+          <p className="text-[11px] text-muted leading-snug mt-1">
+            {worker.noTradeReason ?? 'Entry path clear'}
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted mb-2">Model P</p>
+          <MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} />
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted mb-2">Market P</p>
+          <MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} />
+        </div>
+        <div className="rounded-xl px-3 py-2" style={{ backgroundColor: 'rgba(2,6,23,0.38)' }}>
+          <p className="text-[10px] uppercase tracking-[0.16em] text-muted mb-2">Confidence</p>
+          <MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function WorkerMatrix({
   workers,
   connectionState,
@@ -1183,7 +1367,18 @@ function WorkerMatrix({
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="grid gap-3 xl:hidden">
+        {workers.map((worker) => (
+          <WorkerCompactCard
+            key={worker.assetKey}
+            worker={worker}
+            changedUntil={changedWorkerUntil[worker.assetKey] ?? 0}
+            now={now}
+          />
+        ))}
+      </div>
+
+      <div className="hidden xl:block overflow-x-auto">
         <table className="w-full text-sm min-w-[1500px]">
           <thead>
             <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
