@@ -26,8 +26,12 @@ import {
   Wallet,
   Waves,
 } from "lucide-react";
-import BackendStatusPanel from "@/components/BackendStatusPanel";
 import RealAccountChart from "@/components/RealAccountChart";
+import AnomaliesTable from "@/components/dashboard/AnomaliesTable";
+import ExecutionStateTable from "@/components/dashboard/ExecutionStateTable";
+import GateSummaryTable from "@/components/dashboard/GateSummaryTable";
+import GlobalStatusBar from "@/components/dashboard/GlobalStatusBar";
+import SystemHealthTable from "@/components/dashboard/SystemHealthTable";
 import {
   clearAlertPreference,
   deriveFillNetPnlCents,
@@ -198,7 +202,7 @@ function summarizeFills(fills: KalshiFill[]): FillSummarySnapshot | null {
   };
 }
 
-type Tone = "green" | "amber" | "red" | "blue" | "violet";
+type Tone = "green" | "amber" | "red" | "blue" | "violet" | "gray";
 type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window" | "other";
 type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
 type TerminalConnectionState = "live" | "reconnecting" | "polling" | "stale";
@@ -276,6 +280,7 @@ function toneValue(tone: Tone): { color: string; background: string } {
   if (tone === "amber") return { color: "#F59E0B", background: "rgba(245,158,11,0.12)" };
   if (tone === "red") return { color: "#EF4444", background: "rgba(239,68,68,0.12)" };
   if (tone === "blue") return { color: "#38BDF8", background: "rgba(56,189,248,0.12)" };
+  if (tone === "gray") return { color: "#94A3B8", background: "rgba(148,163,184,0.10)" };
   return { color: "#8B5CF6", background: "rgba(139,92,246,0.12)" };
 }
 
@@ -3172,6 +3177,159 @@ export default function OperatorConsoleClient({
   const totalFillSample = sampleMeta(fillsSectionSummary?.totalFills, "fills");
   const sessionSettledSample = sampleMeta(sessionSummary?.settledFills, "session settled fills");
   const sessionLinkedSample = sampleMeta(sessionSummary?.matchedFills, "session linked fills");
+  const statusBarGroups = useMemo(
+    () => [
+      {
+        title: "System",
+        items: [
+          { label: "Trust", value: terminalOperator.label, tone: terminalOperator.tone },
+          { label: "Opportunity", value: terminalOpportunity.label, tone: terminalOpportunity.tone },
+          { label: "Stream", value: terminalBadge.label, tone: terminalBadge.tone },
+          { label: "Mode", value: health?.liveTradingEnabled ? "ARMED" : "PAPER", tone: health?.liveTradingEnabled ? "green" as Tone : "amber" as Tone },
+        ],
+      },
+      {
+        title: "Market Data",
+        items: [
+          { label: "Orderable", value: `${terminalBlockerSummary.orderableCount}/${terminalWorkers.length || 0}`, tone: terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" as Tone : "amber" as Tone },
+          { label: "Worst Spot Age", value: formatPriceAge(terminalWorstQuoteAge), tone: terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" as Tone : terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.warningQuoteAgeMs ? "amber" as Tone : "blue" as Tone },
+          { label: "Worst Lag", value: formatLatency(slowestWorkerLag), tone: slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.criticalPricingLagMs ? "red" as Tone : slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.warningPricingLagMs ? "amber" as Tone : "green" as Tone },
+          { label: "Fallback", value: String(terminalFallbackWorkers), tone: terminalFallbackWorkers > 0 ? "amber" as Tone : "green" as Tone },
+        ],
+      },
+      {
+        title: "Execution",
+        items: [
+          { label: "Active Pos", value: `${terminalActivePositions}/${status?.positionTracker.max ?? 0}`, tone: terminalActivePositions > 0 ? "green" as Tone : "blue" as Tone },
+          { label: "Recent Commit", value: terminalLatestCommitAt ? formatRelativeTime(terminalLatestCommitAt) : "none", tone: terminalLatestCommitAt ? "blue" as Tone : "violet" as Tone },
+          { label: "Last Fill", value: terminalLastFillAt ? formatRelativeTime(terminalLastFillAt) : "none", tone: terminalLastFillAt ? "blue" as Tone : "violet" as Tone },
+          { label: "Last Warning", value: terminalLastWarningAt ? formatRelativeTime(terminalLastWarningAt) : terminalLastWarningMessage ? "active" : "quiet", tone: terminalLastWarningAt || terminalLastWarningMessage ? "amber" as Tone : "green" as Tone },
+        ],
+      },
+      {
+        title: "Session",
+        items: [
+          { label: "Realized", value: formatCents(sessionSummary?.netPnlCents), tone: sessionSummary != null && sessionSummary.netPnlCents < 0 ? "red" as Tone : "green" as Tone },
+          { label: "Pending", value: formatCount(health?.pendingTrades ?? 0), tone: (health?.pendingTrades ?? 0) > 0 ? "amber" as Tone : "green" as Tone },
+          { label: "Settled", value: formatCount(health?.settledTrades ?? 0), tone: (health?.settledTrades ?? 0) > 0 ? "blue" as Tone : "violet" as Tone },
+          { label: "Analytics", value: summary?.fillsFromDb ? "POSTGRES" : "FALLBACK", tone: summary?.fillsFromDb ? "violet" as Tone : "amber" as Tone },
+        ],
+      },
+    ],
+    [
+      health?.liveTradingEnabled,
+      health?.pendingTrades,
+      health?.settledTrades,
+      sessionSummary,
+      slowestWorkerLag,
+      status?.positionTracker.max,
+      summary?.fillsFromDb,
+      terminalActivePositions,
+      terminalBadge.label,
+      terminalBadge.tone,
+      terminalBlockerSummary.orderableCount,
+      terminalFallbackWorkers,
+      terminalLastFillAt,
+      terminalLastWarningAt,
+      terminalLastWarningMessage,
+      terminalLatestCommitAt,
+      terminalOperator.label,
+      terminalOperator.tone,
+      terminalOpportunity.label,
+      terminalOpportunity.tone,
+      terminalWorkers.length,
+      terminalWorstQuoteAge,
+    ]
+  );
+  const statusBarFlags = useMemo(
+    () => [
+      {
+        label: terminalPricingHealthy ? "pricing path healthy" : "pricing path degraded",
+        tone: terminalPricingHealthy ? "green" as Tone : "amber" as Tone,
+      },
+      {
+        label: `${terminalFragileBooks} fragile book${terminalFragileBooks === 1 ? "" : "s"}`,
+        tone: terminalFragileBooks > 0 ? "amber" as Tone : "blue" as Tone,
+      },
+      {
+        label: `${terminalStaleQuotes} stale quote worker${terminalStaleQuotes === 1 ? "" : "s"}`,
+        tone: terminalStaleQuotes > 0 ? "red" as Tone : "green" as Tone,
+      },
+      {
+        label: `${terminalFallbackWorkers} fallback worker${terminalFallbackWorkers === 1 ? "" : "s"}`,
+        tone: terminalFallbackWorkers > 0 ? "amber" as Tone : "blue" as Tone,
+      },
+    ],
+    [terminalFallbackWorkers, terminalFragileBooks, terminalPricingHealthy, terminalStaleQuotes]
+  );
+  const gateRows = useMemo(
+    () => [
+      {
+        gate: "Orderable",
+        count: terminalBlockerSummary.orderableCount,
+        impact: "workers with valid asks and a live market path",
+        tone: terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" as Tone : "amber" as Tone,
+      },
+      {
+        gate: "Confidence gate",
+        count: terminalBlockerSummary.counts.confidence,
+        impact: "blocked by confidence threshold",
+        tone: terminalBlockerSummary.counts.confidence > 0 ? "amber" as Tone : "green" as Tone,
+      },
+      {
+        gate: "EV gate",
+        count: terminalBlockerSummary.counts.ev,
+        impact: "blocked by edge / EV threshold",
+        tone: terminalBlockerSummary.counts.ev > 0 ? "amber" as Tone : "green" as Tone,
+      },
+      {
+        gate: "Data gate",
+        count: terminalBlockerSummary.counts.data,
+        impact: "crypto, market, or ask unavailable",
+        tone: terminalBlockerSummary.counts.data > 0 ? "red" as Tone : "green" as Tone,
+      },
+      {
+        gate: "Risk gate",
+        count: terminalBlockerSummary.counts.risk,
+        impact: "cooldown, sizing, or exposure controls",
+        tone: terminalBlockerSummary.counts.risk > 0 ? "amber" as Tone : "green" as Tone,
+      },
+      {
+        gate: "Committed",
+        count: terminalBlockerSummary.recentlyCommittedCount,
+        impact: "workers with a recent committed candidate",
+        tone: terminalBlockerSummary.recentlyCommittedCount > 0 ? "blue" as Tone : "gray" as Tone,
+      },
+    ],
+    [terminalBlockerSummary, terminalWorkers.length]
+  );
+  const anomalyRows = useMemo(
+    () =>
+      anomalySummary.map((row) => ({
+        alert: row.label,
+        value: row.value,
+        tone: row.tone,
+        impact:
+          row.label === "Stale Quotes" ? "pricing trust" :
+          row.label === "Rejected Orders" ? "execution path" :
+          row.label === "Data Warnings" ? "market-data integrity" :
+          row.label === "One-sided Books" ? "fake orderability risk" :
+          row.label === "Fallback Sources" ? "quote path degradation" :
+          "ledger trust",
+        sub: row.sub,
+      })),
+    [anomalySummary]
+  );
+  const executionStateRows = useMemo(
+    () =>
+      executionFunnel.map((row) => ({
+        stage: row.label,
+        value: row.value,
+        tone: row.tone,
+        sub: row.sub,
+      })),
+    [executionFunnel]
+  );
 
   return (
     <main
@@ -3182,137 +3340,10 @@ export default function OperatorConsoleClient({
       }}
     >
       <div className="max-w-7xl mx-auto px-4 py-6 md:px-6 lg:px-8 lg:py-8">
-        <section
-          className="rounded-3xl p-5 sm:p-6 lg:p-7 mb-6"
-          style={{
-            background:
-              "linear-gradient(140deg, rgba(15,23,42,0.94), rgba(15,17,23,0.96) 52%, rgba(14,165,233,0.08))",
-            border: "1px solid rgba(51,65,85,0.7)",
-            boxShadow: "0 20px 40px rgba(2,6,23,0.28)",
-          }}
-        >
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,0.86fr)_minmax(0,1.14fr)] lg:items-start xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] 2xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-            <div className="max-w-none lg:max-w-[30rem] xl:max-w-[33rem] 2xl:max-w-[36rem]">
-              <div className="flex flex-wrap items-center gap-2.5 mb-4">
-                <HeroSignal label={`System ${terminalOperator.label}`} tone={terminalOperator.tone} />
-                <HeroSignal label={`Opportunity ${terminalOpportunity.label}`} tone={terminalOpportunity.tone} />
-                <HeroSignal label={terminalBadge.label} tone={terminalBadge.tone} />
-                <HeroSignal label={health?.liveTradingEnabled ? "Live trading armed" : "Paper mode"} tone={health?.liveTradingEnabled ? "green" : "amber"} />
-                <HeroSignal label={summary?.fillsFromDb ? "Postgres analytics" : "Fallback analytics"} tone="violet" />
-              </div>
-              <h1 className="max-w-[13ch] text-4xl font-semibold tracking-tight leading-[0.94] text-text sm:max-w-[14ch] sm:text-5xl lg:max-w-none lg:text-[3.25rem] xl:text-[3.55rem] mb-4">
-                Live operator console for trust, blockers, and execution readiness
-              </h1>
-              <p className="max-w-xl text-sm leading-6 text-slate-300 md:text-base">
-                The first scan is now intentionally operational: can you trust the engine, is anything orderable, what is blocking trade flow,
-                and only then what the ledger says about session and historical performance.
-              </p>
-              <div className="mt-5 flex flex-wrap gap-2.5">
-                <HeroSignal
-                  label={terminalPricingHealthy ? "pricing path healthy" : "pricing path degraded"}
-                  tone={terminalPricingHealthy ? "green" : "amber"}
-                />
-                <HeroSignal
-                  label={`${terminalFallbackWorkers} fallback worker${terminalFallbackWorkers === 1 ? "" : "s"}`}
-                  tone={terminalFallbackWorkers > 0 ? "amber" : "blue"}
-                />
-                <HeroSignal
-                  label={`${terminalFragileBooks} fragile book${terminalFragileBooks === 1 ? "" : "s"}`}
-                  tone={terminalFragileBooks > 0 ? "amber" : "blue"}
-                />
-                <HeroSignal
-                  label={`${terminalStaleQuotes} stale quote worker${terminalStaleQuotes === 1 ? "" : "s"}`}
-                  tone={terminalStaleQuotes > 0 ? "red" : "green"}
-                />
-                <HeroSignal
-                  label={terminalLatestCommitAt ? `last commit ${formatRelativeTime(terminalLatestCommitAt)}` : "no recent commit"}
-                  tone={terminalLatestCommitAt ? "blue" : "violet"}
-                />
-              </div>
-            </div>
-
-            <div className="grid min-w-0 auto-rows-fr grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:self-stretch xl:gap-4 2xl:grid-cols-4">
-              <MetricCard
-                label="System Trust"
-                value={terminalOperator.label}
-                sub={terminalBadge.sub}
-                tone={terminalOperator.tone}
-                icon={<Shield size={14} />}
-                badge={{ label: terminalPricingHealthy ? "priced" : "degraded", tone: terminalPricingHealthy ? "green" : "amber" }}
-              />
-              <MetricCard
-                label="Opportunity State"
-                value={terminalOpportunity.label}
-                sub={terminalOpportunity.sub}
-                tone={terminalOpportunity.tone}
-                icon={<Target size={14} />}
-                badge={
-                  terminalBlockerSummary.recentlyCommittedCount > 0
-                    ? { label: `${terminalBlockerSummary.recentlyCommittedCount} committed`, tone: "blue" }
-                    : null
-                }
-              />
-              <MetricCard
-                label="Orderable Workers"
-                value={`${terminalBlockerSummary.orderableCount}/${terminalWorkers.length || 0}`}
-                sub={`${terminalBlockerSummary.counts.data} data-blocked · ${terminalBlockerSummary.counts.ev + terminalBlockerSummary.counts.confidence} strategy-gated`}
-                tone={terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" : "amber"}
-                icon={<Activity size={14} />}
-                badge={
-                  terminalFallbackWorkers > 0
-                    ? { label: `${terminalFallbackWorkers} fallback`, tone: "amber" }
-                    : null
-                }
-              />
-              <MetricCard
-                label="Pricing Lag"
-                value={formatLatency(slowestWorkerLag)}
-                sub={fastestWorkerLag != null ? `best ${formatLatency(fastestWorkerLag)}` : "waiting for latency samples"}
-                tone={slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.criticalPricingLagMs ? "red" : slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.warningPricingLagMs ? "amber" : "green"}
-                icon={<Activity size={14} />}
-                badge={{ label: terminalPricingHealthy ? "hot path" : "watch", tone: terminalPricingHealthy ? "green" : "amber" }}
-              />
-              <MetricCard
-                label="Worst Spot Age"
-                value={formatPriceAge(terminalWorstQuoteAge)}
-                sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
-                tone={terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.warningQuoteAgeMs ? "amber" : "blue"}
-                icon={<Waves size={14} />}
-                badge={
-                  terminalStaleQuotes > 0
-                    ? { label: `${terminalStaleQuotes} stale`, tone: "red" }
-                    : null
-                }
-              />
-              <MetricCard
-                label="Active Positions"
-                value={`${terminalActivePositions}/${status?.positionTracker.max ?? 0}`}
-                sub={health ? `${health.pendingTrades} pending trades · ${health.settledTrades} settled` : "position tracker"}
-                tone={terminalActivePositions > 0 ? "green" : "blue"}
-                icon={<Wallet size={14} />}
-                badge={
-                  terminalActivePositions >= (status?.positionTracker.max ?? Number.MAX_SAFE_INTEGER)
-                    ? { label: "at cap", tone: "amber" }
-                    : null
-                }
-              />
-              <MetricCard
-                label="Last Fill / Warning"
-                value={terminalLastFillAt ? formatRelativeTime(terminalLastFillAt) : "no fills"}
-                sub={terminalLastWarningAt ? `warning ${formatRelativeTime(terminalLastWarningAt)}` : terminalLastWarningMessage ? terminalLastWarningMessage.slice(0, 88) : "no recent warning or reject"}
-                tone={terminalLastWarningAt || terminalLastWarningMessage ? "amber" : "green"}
-                icon={<AlertTriangle size={14} />}
-                badge={
-                  terminalLastWarningAt || terminalLastWarningMessage
-                    ? { label: "attention", tone: "amber" }
-                    : { label: "quiet", tone: "green" }
-                }
-              />
-            </div>
-          </div>
-
+        <div className="mb-6">
+          <GlobalStatusBar groups={statusBarGroups} flags={statusBarFlags} />
           {terminalOperator.reasons.length > 0 ? (
-            <div className="mt-5 flex flex-wrap gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {terminalOperator.reasons.map((reason) => (
                 <span
                   key={reason}
@@ -3327,24 +3358,19 @@ export default function OperatorConsoleClient({
               ))}
             </div>
           ) : null}
-        </section>
+        </div>
 
         <StickyEscalations alerts={escalations} />
 
         <section className="mb-8">
-          <SectionHeading
-            kicker="System Health"
-            title="Trust-critical backend view"
-            subtitle="This section now stays focused on the trust question: connectivity, freshness, readiness timing, and active health exceptions."
-          />
-          <BackendStatusPanel health={health} status={status} />
+          <SystemHealthTable health={health} status={status} />
         </section>
 
         <section className="mb-8">
           <SectionHeading
             kicker="Live Engine"
-            title="Blockers first, worker state second"
-            subtitle="The summary row tells you what class of problem is dominating. The matrix below makes each worker’s orderability, book quality, and blocker visible in one scan."
+            title="Tables first, matrix second"
+            subtitle="Blockers, execution state, and anomalies are now expressed as dense terminal tables before you drop into per-worker rows."
             actions={
               <FilterChipBar
                 value={opsWindow}
@@ -3357,53 +3383,12 @@ export default function OperatorConsoleClient({
               />
             }
           />
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6 mb-4">
-            <MetricCard
-              label="Orderable"
-              value={`${terminalBlockerSummary.orderableCount}/${terminalWorkers.length || 0}`}
-              sub="workers with valid asks"
-              tone={terminalBlockerSummary.orderableCount === terminalWorkers.length && terminalWorkers.length > 0 ? "green" : "amber"}
-              icon={<Shield size={14} />}
-            />
-            <MetricCard
-              label="Confidence Gate"
-              value={formatCount(terminalBlockerSummary.counts.confidence)}
-              sub="blocked by confidence threshold"
-              tone={terminalBlockerSummary.counts.confidence > 0 ? "amber" : "green"}
-              icon={<Target size={14} />}
-            />
-            <MetricCard
-              label="EV Gate"
-              value={formatCount(terminalBlockerSummary.counts.ev)}
-              sub="blocked by edge/EV threshold"
-              tone={terminalBlockerSummary.counts.ev > 0 ? "amber" : "green"}
-              icon={<Sparkles size={14} />}
-            />
-            <MetricCard
-              label="Data Gate"
-              value={formatCount(terminalBlockerSummary.counts.data)}
-              sub="crypto, market, or ask unavailable"
-              tone={terminalBlockerSummary.counts.data > 0 ? "red" : "green"}
-              icon={<AlertTriangle size={14} />}
-            />
-            <MetricCard
-              label="Risk Gate"
-              value={formatCount(terminalBlockerSummary.counts.risk)}
-              sub="cooldown, sizing, or exposure controls"
-              tone={terminalBlockerSummary.counts.risk > 0 ? "amber" : "green"}
-              icon={<Shield size={14} />}
-            />
-            <MetricCard
-              label="Committed"
-              value={formatCount(terminalBlockerSummary.recentlyCommittedCount)}
-              sub="workers with a recent committed candidate"
-              tone={terminalBlockerSummary.recentlyCommittedCount > 0 ? "green" : "blue"}
-              icon={<Activity size={14} />}
-            />
+          <div className="mb-4">
+            <GateSummaryTable rows={gateRows} windowLabel={opsWindowLabel} />
           </div>
           <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr] mb-4">
-            <ExecutionFunnel funnel={executionFunnel} windowLabel={opsWindowLabel} />
-            <AnomalySummary anomalies={anomalySummary} windowLabel={opsWindowLabel} />
+            <ExecutionStateTable rows={executionStateRows} windowLabel={opsWindowLabel} />
+            <AnomaliesTable rows={anomalyRows} windowLabel={opsWindowLabel} />
           </div>
           <WorkerMatrix
             workers={terminalWorkers}
