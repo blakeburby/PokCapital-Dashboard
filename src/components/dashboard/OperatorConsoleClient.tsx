@@ -73,6 +73,8 @@ const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
 const ALERT_THRESHOLDS = {
   warningQuoteAgeMs: 3_000,
   criticalQuoteAgeMs: 6_000,
+  warningPricingLagMs: 100,
+  criticalPricingLagMs: 250,
   rejectedOrdersInWindow: 1,
   fallbackWorkers: 1,
   oneSidedBooks: 1,
@@ -129,6 +131,12 @@ function formatShortTimestamp(isoOrNull: string | null | undefined): string {
 function formatPriceAge(ms: number | null | undefined): string {
   if (ms == null) return "—";
   if (ms < 1_000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function formatLatency(ms: number | null | undefined): string {
+  if (ms == null) return "—";
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
@@ -1007,6 +1015,16 @@ function formatProbabilityCell(value: number | null | undefined): string {
   return formatPercent(value);
 }
 
+function workerPricingLagMs(worker: TerminalWorkerSnapshot): number | null {
+  const candidates = [
+    worker.pricingLatency?.lastEvaluationLagMs,
+    worker.pricingLatency?.cryptoApplyLagMs,
+    worker.pricingLatency?.marketApplyLagMs,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+  if (candidates.length === 0) return null;
+  return Math.max(...candidates);
+}
+
 function WorkerMatrix({
   workers,
   connectionState,
@@ -1022,7 +1040,7 @@ function WorkerMatrix({
     return (
       <div className="panel text-sm text-muted">
         Worker snapshots have not loaded yet. Once `/status` responds, this section will show per-asset orderability,
-        book quality, quote age, and the exact blocker on each asset.
+        book quality, spot freshness, true pricing lag, and the exact blocker on each asset.
       </div>
     );
   }
@@ -1032,7 +1050,7 @@ function WorkerMatrix({
       <div className="flex items-center justify-between mb-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Worker Matrix</p>
-          <p className="text-sm text-muted">1-second terminal scan of live spot, book quality, probabilities, EV, and blockers per asset</p>
+          <p className="text-sm text-muted">1-second terminal scan of live spot, book quality, quote freshness, true pricing lag, probabilities, EV, and blockers per asset</p>
         </div>
         <div className="flex items-center gap-2">
           <HeroSignal label={`${workers.length} workers`} tone="blue" />
@@ -1041,7 +1059,7 @@ function WorkerMatrix({
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[1320px]">
+        <table className="w-full text-sm min-w-[1420px]">
           <thead>
             <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
               <th className="py-2 font-medium">Asset</th>
@@ -1050,7 +1068,8 @@ function WorkerMatrix({
               <th className="py-2 font-medium">Spot</th>
               <th className="py-2 font-medium">YES bid/ask</th>
               <th className="py-2 font-medium">NO bid/ask</th>
-              <th className="py-2 font-medium">Age</th>
+              <th className="py-2 font-medium">Spot age</th>
+              <th className="py-2 font-medium">Lag</th>
               <th className="py-2 font-medium">Source</th>
               <th className="py-2 font-medium">EV</th>
               <th className="py-2 font-medium">Model P</th>
@@ -1072,13 +1091,21 @@ function WorkerMatrix({
               const sourceTone: Tone =
                 !worker.marketDataSource ? "blue" :
                 worker.marketDataSource === "kalshi_ws_ticker" ? "green" : "amber";
-              const ageTone: Tone =
+              const spotAgeTone: Tone =
                 worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.criticalQuoteAgeMs
                   ? "red"
                   : worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs > ALERT_THRESHOLDS.warningQuoteAgeMs
                     ? "amber"
                     : "green";
-              const agePalette = toneValue(ageTone);
+              const spotAgePalette = toneValue(spotAgeTone);
+              const lagMs = workerPricingLagMs(worker);
+              const lagTone: Tone =
+                lagMs != null && lagMs > ALERT_THRESHOLDS.criticalPricingLagMs
+                  ? "red"
+                  : lagMs != null && lagMs > ALERT_THRESHOLDS.warningPricingLagMs
+                    ? "amber"
+                    : "green";
+              const lagPalette = toneValue(lagTone);
               const recentlyChanged = (changedWorkerUntil[worker.assetKey] ?? 0) > now;
 
               return (
@@ -1134,8 +1161,11 @@ function WorkerMatrix({
                       {oneSided ? <span className="badge badge-amber">fragile</span> : null}
                     </div>
                   </td>
-                  <td className="py-3 font-mono" style={{ color: agePalette.color }}>
+                  <td className="py-3 font-mono" style={{ color: spotAgePalette.color }}>
                     {formatPriceAge(worker.cryptoPriceAgeMs)}
+                  </td>
+                  <td className="py-3 font-mono" style={{ color: lagPalette.color }}>
+                    {formatLatency(lagMs)}
                   </td>
                   <td className="py-3">
                     <span
@@ -2585,6 +2615,20 @@ export default function OperatorConsoleClient({
     return Math.max(...ages);
   }, [terminalWorkers]);
   const terminalWorstQuoteAge = terminalSnapshot?.operatorSummary.worstQuoteAgeMs ?? slowestWorkerAge;
+  const fastestWorkerLag = useMemo(() => {
+    const lags = terminalWorkers
+      .map((worker) => workerPricingLagMs(worker))
+      .filter((lag): lag is number => lag != null);
+    if (lags.length === 0) return null;
+    return Math.min(...lags);
+  }, [terminalWorkers]);
+  const slowestWorkerLag = useMemo(() => {
+    const lags = terminalWorkers
+      .map((worker) => workerPricingLagMs(worker))
+      .filter((lag): lag is number => lag != null);
+    if (lags.length === 0) return null;
+    return Math.max(...lags);
+  }, [terminalWorkers]);
   const terminalActivePositions = terminalSnapshot?.operatorSummary.activePositions ?? status?.positionTracker.active ?? 0;
   const workers = status?.workers ?? [];
   const blockerSummary = useMemo(() => buildBlockerSummary(workers, windowMs(opsWindow)), [workers, opsWindow]);
@@ -2804,7 +2848,7 @@ export default function OperatorConsoleClient({
               </p>
             </div>
 
-            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 min-w-0 xl:min-w-[52rem]">
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-7 gap-3 min-w-0 xl:min-w-[60rem]">
               <MetricCard
                 label="System Trust"
                 value={terminalOperator.label}
@@ -2827,10 +2871,17 @@ export default function OperatorConsoleClient({
                 icon={<Activity size={14} />}
               />
               <MetricCard
-                label="Worst Quote Age"
+                label="Pricing Lag"
+                value={formatLatency(slowestWorkerLag)}
+                sub={fastestWorkerLag != null ? `best ${formatLatency(fastestWorkerLag)}` : "waiting for latency samples"}
+                tone={slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.criticalPricingLagMs ? "red" : slowestWorkerLag != null && slowestWorkerLag > ALERT_THRESHOLDS.warningPricingLagMs ? "amber" : "green"}
+                icon={<Activity size={14} />}
+              />
+              <MetricCard
+                label="Worst Spot Age"
                 value={formatPriceAge(terminalWorstQuoteAge)}
                 sub={fastestWorkerAge != null ? `best ${formatPriceAge(fastestWorkerAge)}` : "waiting for worker prices"}
-                tone={terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : "blue"}
+                tone={terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.criticalQuoteAgeMs ? "red" : terminalWorstQuoteAge != null && terminalWorstQuoteAge > ALERT_THRESHOLDS.warningQuoteAgeMs ? "amber" : "blue"}
                 icon={<Waves size={14} />}
               />
               <MetricCard
