@@ -1410,6 +1410,10 @@ function WorkerMatrix({
 }) {
   const [sortKey, setSortKey] = useState<WorkerSortKey>("status");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [showBookColumns, setShowBookColumns] = useState(true);
+  const [showFreshnessColumns, setShowFreshnessColumns] = useState(true);
+  const [showProbabilityColumns, setShowProbabilityColumns] = useState(true);
+  const [showBlockerColumns, setShowBlockerColumns] = useState(true);
 
   const staleQuotes = workers.filter(
     (worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs
@@ -1549,7 +1553,62 @@ function WorkerMatrix({
         </div>
       </div>
 
-      <div className="grid gap-3 xl:hidden">
+      <div className="mb-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={() => setShowBookColumns((value) => !value)}
+          className="badge transition-colors"
+          style={{
+            backgroundColor: showBookColumns ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+            color: showBookColumns ? "#38BDF8" : "#94A3B8",
+            border: `1px solid ${showBookColumns ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+            cursor: "pointer",
+          }}
+        >
+          {showBookColumns ? "Hide book" : "Show book"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowFreshnessColumns((value) => !value)}
+          className="badge transition-colors"
+          style={{
+            backgroundColor: showFreshnessColumns ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+            color: showFreshnessColumns ? "#38BDF8" : "#94A3B8",
+            border: `1px solid ${showFreshnessColumns ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+            cursor: "pointer",
+          }}
+        >
+          {showFreshnessColumns ? "Hide freshness" : "Show freshness"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowProbabilityColumns((value) => !value)}
+          className="badge transition-colors"
+          style={{
+            backgroundColor: showProbabilityColumns ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+            color: showProbabilityColumns ? "#38BDF8" : "#94A3B8",
+            border: `1px solid ${showProbabilityColumns ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+            cursor: "pointer",
+          }}
+        >
+          {showProbabilityColumns ? "Hide probabilities" : "Show probabilities"}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowBlockerColumns((value) => !value)}
+          className="badge transition-colors"
+          style={{
+            backgroundColor: showBlockerColumns ? "rgba(56,189,248,0.16)" : "rgba(15,23,42,0.65)",
+            color: showBlockerColumns ? "#38BDF8" : "#94A3B8",
+            border: `1px solid ${showBlockerColumns ? "rgba(56,189,248,0.28)" : "rgba(51,65,85,0.8)"}`,
+            cursor: "pointer",
+          }}
+        >
+          {showBlockerColumns ? "Hide blocker detail" : "Show blocker detail"}
+        </button>
+      </div>
+
+      <div className="grid gap-3 lg:hidden">
         {sortedWorkers.map((worker) => (
           <WorkerCompactCard
             key={worker.assetKey}
@@ -1560,7 +1619,7 @@ function WorkerMatrix({
         ))}
       </div>
 
-      <div className="hidden xl:block overflow-x-auto">
+      <div className="hidden lg:block overflow-x-auto">
         <table className="w-full text-sm min-w-[2050px]">
           <thead>
             <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
@@ -1570,20 +1629,20 @@ function WorkerMatrix({
               <SortHeader label="TTE" column="tte" widthClass="min-w-[6rem]" />
               <SortHeader label="Spot" column="spot" align="right" widthClass="min-w-[8rem]" />
               <SortHeader label="Strike" column="strike" align="right" widthClass="min-w-[8rem]" />
-              <SortHeader label="YES Bid" column="spread" align="right" widthClass="min-w-[6rem]" />
-              <SortHeader label="YES Ask" column="spread" align="right" widthClass="min-w-[6rem]" />
-              <SortHeader label="NO Bid" column="spread" align="right" widthClass="min-w-[6rem]" />
-              <SortHeader label="NO Ask" column="spread" align="right" widthClass="min-w-[6rem]" />
-              <SortHeader label="Spread" column="spread" align="right" widthClass="min-w-[6rem]" />
-              <SortHeader label="Spot Age" column="quoteAge" widthClass="min-w-[7rem]" />
-              <SortHeader label="Lag" column="lag" widthClass="min-w-[7rem]" />
+              {showBookColumns ? <SortHeader label="YES Bid" column="spread" align="right" widthClass="min-w-[6rem]" /> : null}
+              {showBookColumns ? <SortHeader label="YES Ask" column="spread" align="right" widthClass="min-w-[6rem]" /> : null}
+              {showBookColumns ? <SortHeader label="NO Bid" column="spread" align="right" widthClass="min-w-[6rem]" /> : null}
+              {showBookColumns ? <SortHeader label="NO Ask" column="spread" align="right" widthClass="min-w-[6rem]" /> : null}
+              {showBookColumns ? <SortHeader label="Spread" column="spread" align="right" widthClass="min-w-[6rem]" /> : null}
+              {showFreshnessColumns ? <SortHeader label="Spot Age" column="quoteAge" widthClass="min-w-[7rem]" /> : null}
+              {showFreshnessColumns ? <SortHeader label="Lag" column="lag" widthClass="min-w-[7rem]" /> : null}
               <SortHeader label="Source" column="source" widthClass="min-w-[7rem]" />
               <SortHeader label="EV" column="ev" align="right" widthClass="min-w-[7rem]" />
-              <SortHeader label="Model P" column="model" widthClass="min-w-[7rem]" />
-              <SortHeader label="Market P" column="marketProbability" widthClass="min-w-[7rem]" />
-              <SortHeader label="Confidence" column="confidence" widthClass="min-w-[7rem]" />
-              <SortHeader label="Blocker" column="blocker" widthClass="min-w-[9rem]" />
-              <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[20rem] text-left">Detail</th>
+              {showProbabilityColumns ? <SortHeader label="Model P" column="model" widthClass="min-w-[7rem]" /> : null}
+              {showProbabilityColumns ? <SortHeader label="Market P" column="marketProbability" widthClass="min-w-[7rem]" /> : null}
+              {showProbabilityColumns ? <SortHeader label="Confidence" column="confidence" widthClass="min-w-[7rem]" /> : null}
+              {showBlockerColumns ? <SortHeader label="Blocker" column="blocker" widthClass="min-w-[9rem]" /> : null}
+              {showBlockerColumns ? <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[20rem] text-left">Detail</th> : null}
               <SortHeader label="Last Commit" column="lastCommit" widthClass="min-w-[8rem]" />
             </tr>
           </thead>
@@ -1641,17 +1700,17 @@ function WorkerMatrix({
                   <td className="py-3 font-mono text-muted whitespace-nowrap">{formatTimeToExpiry(worker.marketCloseTime)}</td>
                   <td className="py-3 text-right font-mono text-text">{worker.currentPrice != null ? `$${worker.currentPrice.toLocaleString()}` : '—'}</td>
                   <td className="py-3 text-right font-mono text-muted">{worker.marketFloorStrike != null ? `$${worker.marketFloorStrike.toLocaleString()}` : '—'}</td>
-                  <td className="py-3 text-right font-mono text-text">{worker.marketYesBidCents ?? '—'}</td>
-                  <td className="py-3 text-right font-mono text-text">{worker.marketYesAskCents ?? '—'}</td>
-                  <td className="py-3 text-right font-mono text-text">{worker.marketNoBidCents ?? '—'}</td>
-                  <td className="py-3 text-right font-mono text-text">{worker.marketNoAskCents ?? '—'}</td>
-                  <td className="py-3 text-right font-mono text-muted">{spread != null ? `${spread.toFixed(1)}c` : '—'}</td>
-                  <td className="py-3">
+                  {showBookColumns ? <td className="py-3 text-right font-mono text-text">{worker.marketYesBidCents ?? '—'}</td> : null}
+                  {showBookColumns ? <td className="py-3 text-right font-mono text-text">{worker.marketYesAskCents ?? '—'}</td> : null}
+                  {showBookColumns ? <td className="py-3 text-right font-mono text-text">{worker.marketNoBidCents ?? '—'}</td> : null}
+                  {showBookColumns ? <td className="py-3 text-right font-mono text-text">{worker.marketNoAskCents ?? '—'}</td> : null}
+                  {showBookColumns ? <td className="py-3 text-right font-mono text-muted">{spread != null ? `${spread.toFixed(1)}c` : '—'}</td> : null}
+                  {showFreshnessColumns ? <td className="py-3">
                     <StatusPill value={formatPriceAge(worker.cryptoPriceAgeMs)} tone={spotAgeTone} sub={worker.cryptoPriceAgeMs != null && worker.cryptoPriceAgeMs < 1000 ? 'fresh' : 'quote'} />
-                  </td>
-                  <td className="py-3">
+                  </td> : null}
+                  {showFreshnessColumns ? <td className="py-3">
                     <StatusPill value={formatLatency(lagMs)} tone={lagTone} sub={lagMs != null && lagMs <= ALERT_THRESHOLDS.warningPricingLagMs ? 'hot path' : 'pipeline'} />
-                  </td>
+                  </td> : null}
                   <td className="py-3">
                     <span className="badge" style={{ backgroundColor: sourceTone === 'green' ? 'rgba(34,197,94,0.12)' : sourceTone === 'amber' ? 'rgba(245,158,11,0.12)' : 'rgba(148,163,184,0.12)', color: sourceTone === 'green' ? '#22C55E' : sourceTone === 'amber' ? '#F59E0B' : '#94A3B8' }}>
                       {formatMarketSource(worker.marketDataSource)}
@@ -1660,15 +1719,15 @@ function WorkerMatrix({
                   <td className="py-3 text-right font-mono" style={{ color: worker.currentEV != null && worker.currentEV >= 0 ? '#22C55E' : worker.currentEV != null ? '#F59E0B' : '#94A3B8' }}>
                     {worker.currentEV != null ? `${worker.currentEV >= 0 ? '+' : ''}${worker.currentEV.toFixed(1)}c` : '—'}
                   </td>
-                  <td className="py-3"><MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} compact /></td>
-                  <td className="py-3"><MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} compact /></td>
-                  <td className="py-3"><MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} compact /></td>
-                  <td className="py-3">
+                  {showProbabilityColumns ? <td className="py-3"><MiniMeter value={worker.modelProbability} tone={probabilityTone(worker.modelProbability, 'model')} compact /></td> : null}
+                  {showProbabilityColumns ? <td className="py-3"><MiniMeter value={worker.marketProbability} tone={probabilityTone(worker.marketProbability, 'market')} compact /></td> : null}
+                  {showProbabilityColumns ? <td className="py-3"><MiniMeter value={worker.confidence} tone={probabilityTone(worker.confidence, 'confidence')} compact /></td> : null}
+                  {showBlockerColumns ? <td className="py-3">
                     <span className="badge" style={{ backgroundColor: palette.background, color: palette.color }}>{blockerLabel(blocker)}</span>
-                  </td>
-                  <td className="py-3">
+                  </td> : null}
+                  {showBlockerColumns ? <td className="py-3">
                     <div className="max-w-[19rem] text-xs text-muted leading-snug">{worker.noTradeReason ?? 'Entry path clear'}</div>
-                  </td>
+                  </td> : null}
                   <td className="py-3">
                     {worker.lastCommittedCandidateAt ? <span className="badge badge-blue">{formatRelativeMoment(worker.lastCommittedCandidateAt)}</span> : <span className="text-xs text-muted">never</span>}
                   </td>
@@ -2010,6 +2069,15 @@ function ExecutionDrilldown({
   );
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const tradeFromUrl = params.get("trade");
+    if (tradeFromUrl) {
+      setSelectedTradeId(tradeFromUrl);
+    }
+  }, []);
+
+  useEffect(() => {
     if (rows.length === 0) {
       setSelectedTradeId(null);
       return;
@@ -2017,6 +2085,41 @@ function ExecutionDrilldown({
     if (!selectedTradeId || !rows.some((trade) => trade.id === selectedTradeId)) {
       setSelectedTradeId(rows[0].id);
     }
+  }, [rows, selectedTradeId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (selectedTradeId) {
+      url.searchParams.set("trade", selectedTradeId);
+    } else {
+      url.searchParams.delete("trade");
+    }
+    window.history.replaceState({}, "", url.toString());
+  }, [selectedTradeId]);
+
+  useEffect(() => {
+    if (rows.length === 0) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || target?.isContentEditable) return;
+
+      if (!["ArrowUp", "ArrowDown", "j", "k"].includes(event.key)) return;
+      event.preventDefault();
+
+      const currentIndex = rows.findIndex((trade) => trade.id === selectedTradeId);
+      const fallbackIndex = currentIndex >= 0 ? currentIndex : 0;
+      const nextIndex =
+        event.key === "ArrowUp" || event.key === "k"
+          ? Math.max(0, fallbackIndex - 1)
+          : Math.min(rows.length - 1, fallbackIndex + 1);
+      setSelectedTradeId(rows[nextIndex]?.id ?? rows[0]?.id ?? null);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [rows, selectedTradeId]);
 
   const pending = rows.filter((trade) => trade.outcome === "pending").length;
@@ -2128,12 +2231,15 @@ function ExecutionDrilldown({
 
   return (
     <div className="panel overflow-hidden">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <p className="section-label" style={{ marginBottom: 4 }}>Execution Drill-down</p>
-          <p className="text-sm text-muted">Live trade rows in dense terminal form, with per-order detail and fill linkage beneath the selected row.</p>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <p className="section-label" style={{ marginBottom: 4 }}>Execution Drill-down</p>
+            <p className="text-sm text-muted">Live trade rows in dense terminal form, with per-order detail and fill linkage beneath the selected row.</p>
+          </div>
+        <div className="flex flex-wrap gap-2">
+          <HeroSignal label={windowLabel} tone="violet" />
+          <HeroSignal label="↑ ↓ / j k to move" tone="blue" />
         </div>
-        <HeroSignal label={windowLabel} tone="violet" />
       </div>
 
       <div className="overflow-x-auto mb-4">
@@ -2296,13 +2402,74 @@ function ExecutionDrilldown({
             <HeroSignal label={reconciliation.pnlLabel} tone={reconciliation.pnlTone} />
           </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6 mb-4">
-            <MetricCard label="Entry" value={`${selectedTrade.entryPrice}c`} sub={selectedTrade.direction.toUpperCase()} tone={selectedTrade.direction === "yes" ? "green" : "red"} />
-            <MetricCard label="Size" value={formatCount(selectedTrade.liveCount ?? selectedTrade.suggestedSize)} sub="live or suggested count" tone="blue" />
-            <MetricCard label="Expected EV" value={`${selectedTrade.ev >= 0 ? "+" : ""}${selectedTrade.ev.toFixed(1)}c`} sub="per contract at commit" tone={selectedTrade.ev >= 0 ? "green" : "amber"} />
-            <MetricCard label="Confidence" value={formatPercent(selectedTrade.confidence)} sub={`regime ${selectedTrade.regime}`} tone={(selectedTradeConfidencePct ?? 0) >= 85 ? "green" : "amber"} />
-            <MetricCard label="Realized P/L" value={formatCents(tradePnlTotal(selectedTrade))} sub={selectedTrade.outcome === "pending" ? "unsettled" : "settled outcome"} tone={(tradePnlTotal(selectedTrade) ?? 0) >= 0 ? "green" : "red"} />
-            <MetricCard label="Linked Fills" value={formatCount(selectedTradeFills.length)} sub={selectedTradeFills.length > 0 ? `${selectedTradeEvents.length} execution events` : "no linked fills yet"} tone={selectedTradeFills.length > 0 ? "green" : "amber"} />
+          <div className="grid gap-4 xl:grid-cols-[0.92fr_1.08fr] mb-4">
+            <div className="overflow-x-auto rounded-xl border" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+              <table className="w-full text-sm min-w-[420px]">
+                <thead>
+                  <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                    <th className="py-2 px-3 font-medium">Order Field</th>
+                    <th className="py-2 px-3 font-medium text-right">Value</th>
+                    <th className="py-2 px-3 font-medium">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: "Entry", value: `${selectedTrade.entryPrice}c`, note: selectedTrade.direction.toUpperCase(), tone: selectedTrade.direction === "yes" ? "green" : "red" },
+                    { label: "Size", value: formatCount(selectedTrade.liveCount ?? selectedTrade.suggestedSize), note: "live or suggested count", tone: "blue" },
+                    { label: "Expected EV", value: `${selectedTrade.ev >= 0 ? "+" : ""}${selectedTrade.ev.toFixed(1)}c`, note: "per contract at commit", tone: selectedTrade.ev >= 0 ? "green" : "amber" },
+                    { label: "Confidence", value: formatPercent(selectedTrade.confidence), note: `regime ${selectedTrade.regime}`, tone: (selectedTradeConfidencePct ?? 0) >= 85 ? "green" : "amber" },
+                    { label: "Realized P/L", value: formatCents(tradePnlTotal(selectedTrade)), note: selectedTrade.outcome === "pending" ? "unsettled" : "settled outcome", tone: (tradePnlTotal(selectedTrade) ?? 0) >= 0 ? "green" : "red" },
+                    { label: "Linked fills", value: formatCount(selectedTradeFills.length), note: selectedTradeFills.length > 0 ? `${selectedTradeEvents.length} execution events` : "no linked fills yet", tone: selectedTradeFills.length > 0 ? "green" : "amber" },
+                  ].map((row) => {
+                    const palette = toneValue(row.tone as Tone);
+                    return (
+                      <tr key={row.label} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                        <td className="py-2 px-3 font-medium text-text">{row.label}</td>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: palette.color }}>{row.value}</td>
+                        <td className="py-2 px-3 text-muted">{row.note}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+              <table className="w-full text-sm min-w-[460px]">
+                <thead>
+                  <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                    <th className="py-2 px-3 font-medium">Reconciliation</th>
+                    <th className="py-2 px-3 font-medium text-right">Current</th>
+                    <th className="py-2 px-3 font-medium">Signal</th>
+                    <th className="py-2 px-3 font-medium">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    { label: "Coverage", value: `${reconciliation.filledCount}/${reconciliation.expectedCount || 0}`, note: reconciliation.coverageLabel, tone: reconciliation.coverageTone },
+                    { label: "Order-linked fills", value: String(reconciliation.orderLinked), note: "matched by order id", tone: reconciliation.orderLinked > 0 ? "green" : "amber" },
+                    { label: "Trade-linked fills", value: String(reconciliation.tradeLinked), note: "matched by trade linkage", tone: reconciliation.tradeLinked > 0 ? "green" : "amber" },
+                    { label: "Inferred fills", value: String(reconciliation.inferred), note: "ticker / timing fallback", tone: reconciliation.inferred > 0 ? "amber" : "blue" },
+                    { label: "Settlement", value: reconciliation.settlementLabel, note: "trade vs fill outcome alignment", tone: reconciliation.settlementTone },
+                    { label: "P/L check", value: reconciliation.pnlLabel, note: "trade row vs fill economics", tone: reconciliation.pnlTone },
+                  ].map((row) => {
+                    const palette = toneValue(row.tone as Tone);
+                    return (
+                      <tr key={row.label} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                        <td className="py-2 px-3 font-medium text-text">{row.label}</td>
+                        <td className="py-2 px-3 text-right font-mono" style={{ color: palette.color }}>{row.value}</td>
+                        <td className="py-2 px-3">
+                          <span className="badge" style={{ backgroundColor: palette.background, color: palette.color }}>
+                            {row.tone === "green" ? "aligned" : row.tone === "red" ? "drift" : row.tone === "amber" ? "watch" : "info"}
+                          </span>
+                        </td>
+                        <td className="py-2 px-3 text-muted">{row.note}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="grid gap-4 xl:grid-cols-[0.95fr_1.05fr]">
@@ -2320,29 +2487,52 @@ function ExecutionDrilldown({
               {selectedTradeFills.length === 0 ? (
                 <p className="text-sm text-muted">No linked fills yet for this order.</p>
               ) : (
-                <div className="space-y-2">
-                  {selectedTradeFills.map((fill) => {
-                    const pnl = fill.outcome ? deriveFillNetPnlCents(fill, fill.outcome) : fill.pnl_net_cents ?? null;
-                    return (
-                      <div
-                        key={`${fill.trade_id}-${fill.order_id}`}
-                        className="rounded-xl px-3 py-3"
-                        style={{ backgroundColor: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.08)" }}
-                      >
-                        <div className="flex flex-wrap items-center gap-2 mb-2">
-                          <HeroSignal label={String(fill.side).toUpperCase()} tone={String(fill.side).toLowerCase() === "yes" ? "green" : "red"} />
-                          <span className="text-sm text-text font-medium">{formatShortTimestamp(fill.created_time)}</span>
-                          <span className="text-xs font-mono text-muted">{fill.order_id}</span>
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-sm">
-                          <span className="text-muted">Count <span className="font-mono text-text">{formatCount(fill.count)}</span></span>
-                          <span className="text-muted">Fill <span className="font-mono text-text">{getFillPriceCents(fill)}c</span></span>
-                          <span className="text-muted">Fee <span className="font-mono text-text">{fill.fee_cents != null ? `${fill.fee_cents}c` : "—"}</span></span>
-                          <span className="text-muted">Net <span className="font-mono" style={{ color: (pnl ?? 0) >= 0 ? "#22C55E" : "#EF4444" }}>{pnl != null ? formatCents(pnl) : "—"}</span></span>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[780px]">
+                    <thead>
+                      <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                        <th className="py-2 font-medium">Time</th>
+                        <th className="py-2 font-medium">Side</th>
+                        <th className="py-2 font-medium text-right">Count</th>
+                        <th className="py-2 font-medium text-right">Fill</th>
+                        <th className="py-2 font-medium text-right">Fee</th>
+                        <th className="py-2 font-medium">Outcome</th>
+                        <th className="py-2 font-medium text-right">Net P/L</th>
+                        <th className="py-2 font-medium">Order ID</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedTradeFills.map((fill) => {
+                        const pnl = fill.outcome ? deriveFillNetPnlCents(fill, fill.outcome) : fill.pnl_net_cents ?? null;
+                        return (
+                          <tr key={`${fill.trade_id}-${fill.order_id}`} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                            <td className="py-2 text-muted">{formatShortTimestamp(fill.created_time)}</td>
+                            <td className="py-2">
+                              <span className={String(fill.side).toLowerCase() === "yes" ? "badge badge-green" : "badge badge-red"}>
+                                {String(fill.side).toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="py-2 text-right font-mono text-muted">{formatCount(fill.count)}</td>
+                            <td className="py-2 text-right font-mono text-text">{getFillPriceCents(fill)}c</td>
+                            <td className="py-2 text-right font-mono text-muted">{fill.fee_cents != null ? `${fill.fee_cents}c` : "—"}</td>
+                            <td className="py-2">
+                              {fill.outcome ? (
+                                <span className={fill.outcome === "win" ? "badge badge-green" : "badge badge-red"}>
+                                  {fill.outcome.toUpperCase()}
+                                </span>
+                              ) : (
+                                <span className="badge badge-amber">PENDING</span>
+                              )}
+                            </td>
+                            <td className="py-2 text-right font-mono" style={{ color: (pnl ?? 0) >= 0 ? "#22C55E" : "#EF4444" }}>
+                              {pnl != null ? formatCents(pnl) : "—"}
+                            </td>
+                            <td className="py-2 font-mono text-xs text-muted">{fill.order_id}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
@@ -2361,28 +2551,31 @@ function ExecutionDrilldown({
               {selectedTradeEvents.length === 0 ? (
                 <p className="text-sm text-muted">No parsed execution events linked to this trade yet.</p>
               ) : (
-                <div className="space-y-2">
-                  {selectedTradeEvents.map((event) => (
-                    <div
-                      key={event.id}
-                      className="rounded-xl px-3 py-3"
-                      style={{ backgroundColor: "rgba(15,23,42,0.58)", border: "1px solid rgba(148,163,184,0.08)" }}
-                    >
-                      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2 mb-1">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm min-w-[760px]">
+                    <thead>
+                      <tr className="text-left text-muted border-b" style={{ borderColor: "rgba(148,163,184,0.12)" }}>
+                        <th className="py-2 font-medium">Time</th>
+                        <th className="py-2 font-medium">Stage</th>
+                        <th className="py-2 font-medium">Message</th>
+                        <th className="py-2 font-medium">Detail</th>
+                        <th className="py-2 font-medium">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedTradeEvents.map((event) => (
+                        <tr key={event.id} className="border-b" style={{ borderColor: "rgba(148,163,184,0.08)" }}>
+                          <td className="py-2 text-muted">{formatRelativeMoment(event.iso)}</td>
+                          <td className="py-2">
                             <HeroSignal label={executionStageLabel(event.stage)} tone={executionStageTone(event.stage)} />
-                            <span className="text-sm font-medium text-text">{event.message}</span>
-                          </div>
-                          <p className="text-xs text-muted">{event.detail}</p>
-                        </div>
-                        <div className="flex flex-col items-start lg:items-end text-xs text-muted">
-                          <span>{formatRelativeMoment(event.iso)}</span>
-                          <span className="font-mono">{event.source}</span>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                          </td>
+                          <td className="py-2 text-text">{event.message}</td>
+                          <td className="py-2 text-xs text-muted">{event.detail}</td>
+                          <td className="py-2 font-mono text-xs text-muted">{event.source}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>
