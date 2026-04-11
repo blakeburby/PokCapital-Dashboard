@@ -53,6 +53,7 @@ import {
   type BackendStatus,
   type BreakdownRow,
   type FillAnalytics,
+  type FillsWindow,
   type KalshiFill,
   type LogsResponse,
   type PaperBalance,
@@ -71,6 +72,7 @@ const TRADE_REFRESH_MS = 15_000;
 const FILL_REFRESH_MS = 45_000;
 const LOG_REFRESH_MS = 20_000;
 const FILL_LIMIT = 180;
+const EXTENDED_FILL_LIMIT = 500;
 const LOG_LIMIT = 220;
 const TRADE_LIMIT = 40;
 const STRATEGY_ASSET_SET = new Set(["BTC", "ETH", "SOL", "XRP"]);
@@ -130,6 +132,13 @@ function formatShortTimestamp(isoOrNull: string | null | undefined): string {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function formatShortTimestampValue(value: string | number | null | undefined): string {
+  if (value == null) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return formatShortTimestamp(date.toISOString());
 }
 
 function formatPriceAge(ms: number | null | undefined): string {
@@ -207,7 +216,7 @@ type BlockerCategory = "clear" | "confidence" | "ev" | "data" | "risk" | "window
 type OpportunityState = "BLOCKED" | "SCANNING" | "COMMITTED" | "EXECUTING";
 type TerminalConnectionState = "live" | "reconnecting" | "polling" | "stale";
 type OpsWindow = "15m" | "1h" | "24h";
-type LedgerWindow = "today" | "7d" | "all";
+type LedgerWindow = FillsWindow;
 type SortDirection = "asc" | "desc";
 type WorkerSortKey =
   | "asset"
@@ -553,8 +562,9 @@ function inLedgerWindow(value: string, window: LedgerWindow): boolean {
   const ts = new Date(value).getTime();
   if (!Number.isFinite(ts)) return false;
   if (window === "all") return true;
-  if (window === "today") return localDayKey(ts) === localDayKey(Date.now());
-  return Date.now() - ts <= 7 * 24 * 60 * 60_000;
+  if (window === "today") return Date.now() - ts <= 24 * 60 * 60_000;
+  if (window === "7d") return Date.now() - ts <= 7 * 24 * 60 * 60_000;
+  return Date.now() - ts <= 30 * 24 * 60 * 60_000;
 }
 
 function buildBlockerSummary(
@@ -1744,15 +1754,18 @@ function WorkerMatrix({
 function RecentFillsPanel({
   fills,
   windowLabel,
+  window,
+  onWindowChange,
 }: {
   fills: KalshiFill[] | undefined;
   windowLabel: string;
+  window: LedgerWindow;
+  onWindowChange: (next: LedgerWindow) => void;
 }) {
   const rows = useMemo(
     () => [...(fills ?? [])]
       .filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase()))
-      .sort((a, b) => new Date(b.created_time).getTime() - new Date(a.created_time).getTime())
-      .slice(0, 12),
+      .sort((a, b) => new Date(b.created_time).getTime() - new Date(a.created_time).getTime()),
     [fills]
   );
 
@@ -1761,9 +1774,21 @@ function RecentFillsPanel({
       <div className="flex items-center justify-between mb-3">
         <div>
           <p className="section-label" style={{ marginBottom: 4 }}>Recent Fills</p>
-          <p className="text-sm text-muted">Dense ledger table with settlement outcome, fee, linkage, and fill-level realized P/L.</p>
+          <p className="text-sm text-muted">Dense ledger table with fill time, trade placed time, model probability, fee, linkage, and fill-level realized P/L.</p>
         </div>
-        <HeroSignal label={`${rows.length} fills · ${windowLabel}`} tone="violet" />
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <FilterChipBar
+            value={window}
+            onChange={onWindowChange}
+            options={[
+              { value: "today", label: "Today" },
+              { value: "7d", label: "7d" },
+              { value: "30d", label: "30d" },
+              { value: "all", label: "All" },
+            ]}
+          />
+          <HeroSignal label={`${rows.length} fills · ${windowLabel}`} tone="violet" />
+        </div>
       </div>
 
       {fills == null ? (
@@ -1772,15 +1797,17 @@ function RecentFillsPanel({
         <div className="text-sm text-muted">No fills yet. The ledger table will populate after the first ingested fills.</div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full text-sm min-w-[1080px]">
+          <table className="w-full text-sm min-w-[1280px]">
             <thead>
               <tr className="text-left text-muted border-b" style={{ borderColor: 'rgba(148,163,184,0.12)' }}>
                 <th className="sticky top-0 left-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[8rem]">Time</th>
                 <th className="sticky top-0 left-[8rem] z-10 py-2 font-medium bg-[#0F1117] min-w-[6rem]">Asset</th>
+                <th className="py-2 font-medium min-w-[8rem]">Trade Placed</th>
                 <th className="sticky top-0 z-10 py-2 font-medium bg-[#0F1117] min-w-[18rem]">Market</th>
                 <th className="py-2 font-medium">Side</th>
                 <th className="py-2 font-medium text-right">Count</th>
                 <th className="py-2 font-medium text-right">Fill</th>
+                <th className="py-2 font-medium text-right">Model P</th>
                 <th className="py-2 font-medium text-right">Fee</th>
                 <th className="py-2 font-medium">Outcome</th>
                 <th className="py-2 font-medium text-right">Net P/L</th>
@@ -1795,6 +1822,7 @@ function RecentFillsPanel({
                   <tr key={`${fill.trade_id}-${fill.order_id}`} className="border-b" style={{ borderColor: 'rgba(148,163,184,0.08)' }}>
                     <td className="sticky left-0 z-[1] py-2 bg-[#0F1117] text-muted">{formatShortTimestamp(fill.created_time)}</td>
                     <td className="sticky left-[8rem] z-[1] py-2 bg-[#0F1117] font-medium text-text">{assetFromFill(fill)}</td>
+                    <td className="py-2 text-muted">{formatShortTimestampValue(fill.trade_entry_timestamp)}</td>
                     <td className="py-2 text-xs text-muted truncate max-w-[18rem]">{fill.ticker}</td>
                     <td className="py-2">
                       <span className={String(fill.side).toLowerCase() === 'yes' ? 'badge badge-green' : 'badge badge-red'}>
@@ -1803,6 +1831,7 @@ function RecentFillsPanel({
                     </td>
                     <td className="py-2 text-right font-mono text-muted">{formatCount(fill.count)}</td>
                     <td className="py-2 text-right font-mono text-text">{getFillPriceCents(fill)}c</td>
+                    <td className="py-2 text-right font-mono text-text">{formatPercent(fill.trade_model_probability)}</td>
                     <td className="py-2 text-right font-mono text-muted">{fill.fee_cents != null ? `${fill.fee_cents}c` : '—'}</td>
                     <td className="py-2">
                       {outcome ? (
@@ -2945,6 +2974,17 @@ export default function OperatorConsoleClient({
       fallbackData: initialData?.fills,
     }
   );
+  const ledgerFillLimit = ledgerWindow === "today" ? FILL_LIMIT : EXTENDED_FILL_LIMIT;
+  const { data: ledgerFillRows } = useSWR<KalshiFill[]>(
+    loadDeepData ? ["kalshi-fills-ledger", ledgerWindow, ledgerFillLimit] : null,
+    () => getFills({ limit: ledgerFillLimit, window: ledgerWindow }),
+    {
+      refreshInterval: FILL_REFRESH_MS,
+      revalidateOnFocus: false,
+      keepPreviousData: true,
+      dedupingInterval: 15_000,
+    }
+  );
   const { data: logs } = useSWR<LogsResponse>(
     loadDeepData ? ["backend-logs", LOG_LIMIT] : null,
     () => getLogs({ limit: LOG_LIMIT }),
@@ -3165,8 +3205,8 @@ export default function OperatorConsoleClient({
     [fills]
   );
   const ledgerFills = useMemo(
-    () => strategyFills.filter((fill) => inLedgerWindow(fill.created_time, ledgerWindow)),
-    [strategyFills, ledgerWindow]
+    () => (ledgerFillRows ?? []).filter((fill) => STRATEGY_ASSET_SET.has(assetFromFill(fill).toUpperCase())),
+    [ledgerFillRows]
   );
   const sessionFills = useMemo(
     () => strategyFills.filter((fill) => localDayKey(fill.created_time) === localDayKey(new Date())),
@@ -3318,7 +3358,11 @@ export default function OperatorConsoleClient({
     ];
   }, [opsRecentEvents, opsLogLines, workers]);
   const opsWindowLabel = opsWindow === "15m" ? "Last 15m" : opsWindow === "1h" ? "Last 1h" : "Last 24h";
-  const ledgerWindowLabel = ledgerWindow === "today" ? "Today" : ledgerWindow === "7d" ? "Last 7d" : "All time";
+  const ledgerWindowLabel =
+    ledgerWindow === "today" ? "Today" :
+    ledgerWindow === "7d" ? "Last 7d" :
+    ledgerWindow === "30d" ? "Last 30d" :
+    "All time";
   const escalations = useMemo<Escalation[]>(() => {
     const staleWorkers = workers.filter((worker) => (worker.cryptoPriceAgeMs ?? 0) > ALERT_THRESHOLDS.criticalQuoteAgeMs).length;
     const fallbackWorkers = workers.filter((worker) => worker.marketDataSource && worker.marketDataSource !== "kalshi_ws_ticker").length;
@@ -3862,17 +3906,6 @@ export default function OperatorConsoleClient({
             kicker="Fills & Reconciliation"
             title="Persisted ledger, match rate, and settlement trail"
             subtitle="The fills section stays grounded in the stored fill ledger and the backend’s own reconciliation status rather than browser-side reconstruction."
-            actions={
-              <FilterChipBar
-                value={ledgerWindow}
-                onChange={setLedgerWindow}
-                options={[
-                  { value: "today", label: "Today" },
-                  { value: "7d", label: "Last 7d" },
-                  { value: "all", label: "All time" },
-                ]}
-              />
-            }
           />
 
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4 mb-4">
@@ -3921,7 +3954,12 @@ export default function OperatorConsoleClient({
             </div>
           ) : null}
 
-          <RecentFillsPanel fills={ledgerFills} windowLabel={ledgerWindowLabel} />
+          <RecentFillsPanel
+            fills={ledgerFills}
+            window={ledgerWindow}
+            onWindowChange={setLedgerWindow}
+            windowLabel={ledgerWindowLabel}
+          />
         </section>
 
         <section>

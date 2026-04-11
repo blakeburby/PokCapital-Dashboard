@@ -7,9 +7,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "NEXT_PUBLIC_API_BASE not set" }, { status: 500 });
   }
   try {
-    const limit = Number(new URL(req.url).searchParams.get("limit") ?? "");
-    const limitQuery = Number.isFinite(limit) && limit > 0 ? `?limit=${limit}` : "";
-    const res = await fetch(`${RAILWAY}/fills${limitQuery}`, { cache: "no-store" });
+    const searchParams = new URL(req.url).searchParams;
+    const limit = Number(searchParams.get("limit") ?? "");
+    const window = searchParams.get("window");
+    const params = new URLSearchParams();
+    if (Number.isFinite(limit) && limit > 0) params.set("limit", String(limit));
+    if (window) params.set("window", window);
+    const query = params.size > 0 ? `?${params.toString()}` : "";
+    const res = await fetch(`${RAILWAY}/fills${query}`, { cache: "no-store" });
     if (!res.ok) {
       return NextResponse.json(
         { error: `Railway returned ${res.status}` },
@@ -20,10 +25,7 @@ export async function GET(req: NextRequest) {
     if (!Array.isArray(data)) {
       return NextResponse.json(data);
     }
-    if (!Number.isFinite(limit) || limit <= 0) {
-      return NextResponse.json(data);
-    }
-    return NextResponse.json(data.slice(-limit));
+    return NextResponse.json(data);
   } catch {
     return NextResponse.json({ error: "Failed to reach backend" }, { status: 502 });
   }

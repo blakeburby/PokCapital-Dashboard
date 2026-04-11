@@ -77,7 +77,11 @@ export interface KalshiFill {
   outcome?: "win" | "loss" | null;
   pnl_gross_cents?: number | null;
   pnl_net_cents?: number | null;
+  trade_entry_timestamp?: number | null;
+  trade_model_probability?: number | null;
 }
+
+export type FillsWindow = "today" | "7d" | "30d" | "all";
 
 export function getFillPriceCents(
   fill: Pick<KalshiFill, "fill_price" | "side" | "yes_price" | "no_price">
@@ -479,9 +483,10 @@ export async function getBalance(): Promise<AccountBalance> {
   return res.json();
 }
 
-export async function getFills(options?: { limit?: number }): Promise<KalshiFill[]> {
+export async function getFills(options?: { limit?: number; window?: FillsWindow }): Promise<KalshiFill[]> {
   const params = new URLSearchParams();
   if (options?.limit != null) params.set("limit", String(options.limit));
+  if (options?.window != null) params.set("window", options.window);
   const query = params.size > 0 ? `?${params.toString()}` : "";
   const res = await timedFetch(`/api/fills${query}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`/api/fills returned ${res.status}`);
